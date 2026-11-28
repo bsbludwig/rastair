@@ -1,7 +1,7 @@
 use crate::{
     bed::{
         BedFormat,
-        rastair1::{BedRecordsFilterParams, Rastair1BedFormat},
+        rastair1::{BedRecordsFilterParams, Rastair1BedFormat, VcfKeys, VcfRecord},
         writer::BedWriter,
     },
     io::{
@@ -15,8 +15,9 @@ use color_eyre::{
     Section as _,
     eyre::{Result, WrapErr, eyre},
 };
-use rust_htslib::bcf::{self, Read as _};
-use tracing::{debug, info, warn};
+use seqair::vcf::{FullRecord, Reader, VcfFile, VcfStream, Writer};
+use std::{io::BufWriter, num::NonZeroUsize};
+use tracing::{info, warn};
 
 /// Convert between different file formats that rastair supports
 ///
@@ -84,44 +85,42 @@ pub fn convert(params: &ConvertParams) -> Result<()> {
             info!("Copied input to output without conversion");
             Ok(())
         }
-        // converting from vcf to bcf or vice versa using htslib directly
+        // converting from vcf to bcf or vice versa
         (input, OutputFormat::VcfLike(output)) => {
-            use vcf_writer::*;
-
-            // htslib allows setting the number of background compression
-            // threads, so we take the total (without the main thread) and give
-            // 1/3 to the reader and 2/3 to the writer, with a minimum of 1
-            // thread for each.
+            // The total without the main thread: a third reads and inflates,
+            // the rest compresses, at least one thread each.
             let background_threads = params.total_threads.saturating_sub(1);
             let reader_threads = background_threads.div_ceil(3).max(1);
             let writer_threads = background_threads.saturating_sub(reader_threads).max(1);
 
-            let mut reader = bcf::Reader::from_path(params.input.path())
-                .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?;
+            let mut reader = params.reader::<FullRecord>(reader_threads)?;
 
-            reader.set_threads(reader_threads).wrap_err("Failed to set VCF reader threads")?;
+            info!(from=?input, to=?output, "Converting");
 
-            let header = bcf::Header::from_template(reader.header());
+            let sink = params
+                .output
+                .clone()
+                .create()
+                .wrap_err_with(|| format!("Failed to create output `{}`", params.output))?;
+            let mut writer = Writer::new(BufWriter::new(sink), output.into())
+                .compression_threads(writer_threads)
+                .write_header(reader.header())
+                .wrap_err_with(|| {
+                    format!("Failed to create VCF writer for output file `{}`", params.output)
+                })?;
 
-            let (format, uncompressed) = match output {
-                VcfFormat::Bcf => (bcf::Format::Bcf, false),
-                VcfFormat::Vcf => (bcf::Format::Vcf, true),
-                VcfFormat::VcfCompressed => (bcf::Format::Vcf, false),
-            };
-
-            info!(from=?input, to=?output, "Converting using htslib");
-
-            let mut writer =
-                bcf::Writer::from_path(params.output.path(), &header, uncompressed, format)
-                    .wrap_err_with(|| {
-                        format!("Failed to create VCF writer for output file `{}`", params.output)
-                    })?;
-            writer.set_threads(writer_threads).wrap_err("Failed to set VCF writer threads")?;
-
-            for result in reader.records() {
-                let record = result.wrap_err("Failed to read record from VCF file")?;
-                writer.write(&record).wrap_err("Failed to write record to output file")?;
+            while let Some(record) =
+                reader.next_record().wrap_err("Failed to read record from VCF file")?
+            {
+                writer
+                    .copy_record(record)
+                    .and_then(|copy| copy.emit())
+                    .wrap_err("Failed to write record to output file")?;
             }
+            let (sink, _index) = writer.finish().wrap_err("Failed to finish the output file")?;
+            sink.into_inner()
+                .map_err(|error| error.into_error())
+                .wrap_err("Failed to flush the output file")?;
 
             Ok(())
         }
@@ -163,37 +162,46 @@ impl ConvertParams {
     }
 }
 
+impl ConvertParams {
+    /// A reader of the input, a file or stdin, inflating on `threads` threads.
+    fn reader<F: seqair::vcf::Fields>(&self, threads: usize) -> Result<Reader<F>> {
+        let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
+        if self.input.is_std() {
+            VcfStream::stdin()
+                .reader::<F>()
+                .threads(threads)
+                .open()
+                .wrap_err("Failed to open stdin to read VCF file")
+        } else if self.input.is_file() {
+            VcfFile::open(self.input.path())
+                .and_then(|file| file.reader::<F>().threads(threads).open())
+                .wrap_err_with(|| format!("Failed to open VCF file `{}`", self.input))
+        } else {
+            Err(eyre!("VCF input can only be file or stdin").note("If you need to convert from other source, please open an issue in the rastair2 repository"))
+        }
+    }
+}
+
 fn vcf_to_bed(params: &ConvertParams, format: BedFormat) -> Result<()> {
-    let mut reader = if params.input.is_std() {
-        bcf::Reader::from_stdin().wrap_err("Failed to open stdin to read VCF file")?
-    } else if params.input.is_file() {
-        bcf::Reader::from_path(params.input.path())
-            .wrap_err_with(|| format!("Failed to open VCF file `{}`", params.input))?
-    } else {
-        return Err(eyre!("VCF input can only be file or stdin").note("If you need to convert from other source, please open an issue in the rastair2 repository"));
-    };
-    reader.set_threads(2).wrap_err("Failed to set VCF reader threads")?;
+    let mut reader = params.reader::<VcfRecord>(2)?;
+    let keys = VcfKeys::of(&reader.keys()).wrap_err("Failed to read the VCF header")?;
 
     let mut writer = BedWriter::new(&params.output, format).wrap_err_with(|| {
         format!("Failed to create BED writer for output file `{}`", params.output)
     })?;
 
-    let mut record = reader.empty_record();
     // `call` writes a position's main record first, then under `--all` its
     // rejected alts and its indels at the same position; the BED has one row
     // per position, as `call --bed` writes it.
     let mut last_row = None;
-    while let Some(res) = reader.read(&mut record) {
-        if let Err(error) = res {
-            debug!(%error, "Skipping invalid record in VCF file");
-            continue;
-        };
-        let at = (record.rid(), record.pos());
+    while let Some(record) = reader.next_record().wrap_err("Failed to read record from VCF file")? {
+        let locus = &record.0;
+        let at = (locus.contig().index(), locus.start());
         if last_row == Some(at) {
             continue;
         }
 
-        let Some(row) = Rastair1BedFormat::from_vcf(&record, &params.bed_params)
+        let Some(row) = Rastair1BedFormat::from_vcf(&keys, record, &params.bed_params)
             .wrap_err("Failed to convert record to BED format")?
         else {
             continue;

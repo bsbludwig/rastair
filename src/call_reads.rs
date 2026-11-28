@@ -13,16 +13,15 @@ use crate::{
     utils::{cli, logging::ThisIsABug},
     vcf::CpgSide,
 };
-use bio_types::sequence::SequenceReadPairOrientation;
 use clio::ClioPath;
 use color_eyre::{
     Result, Section,
     eyre::{Context as _, ContextCompat},
 };
-use rust_htslib::bam::{FetchDefinition, Read, Record, ext::BamRecordExtensions};
 use rustc_hash::FxHashMap;
+use seqair::bam::{RawBamRecord, aligned_pairs::MatchPosition, cigar::CigarOpType};
 use seqair_types::Strand;
-use seqair_types::{Base, SmallVec};
+use seqair_types::{Base, Pos0, SmallVec};
 use std::thread::available_parallelism;
 
 mod hts_utils;
@@ -174,6 +173,7 @@ pub fn call_reads(params: &PerReadParams) -> Result<()> {
         .wrap_err("Failed to create thread pool for rayon")?;
     let processed = segments::process_in_order(
         &pool,
+        None,
         &regions,
         || WorkerReaders::open(params),
         |WorkerReaders { bam, calls }, region| {
@@ -257,11 +257,6 @@ fn process_region(
         .segment(region, params.segment_overlap)
         .wrap_err("Could not fetch segment from BAM file")?;
 
-    FetchDefinition::try_from(&segment.region)
-        .wrap_err("Could not convert region string")
-        .and_then(|r| readers.bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
-        .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
-
     let calls = if let Some(calls_reader) = calls_reader {
         let region = segment
             .region
@@ -287,33 +282,41 @@ fn process_region(
     };
     let mut res = Vec::with_capacity(capacity_est);
 
-    let mut record = Record::new();
-    while let Some(result) = readers.bam.read(&mut record) {
-        if let Err(e) = result {
-            return Err(e).wrap_err("Failed to read BAM record");
-        }
+    let fetch_error = || format!("Could not fetch region `{}` from BAM file", region.region);
+    let pos = |at: u64| u32::try_from(at).ok().and_then(Pos0::new);
+    let tid = readers
+        .bam
+        .header()
+        .tid(&segment.region.contig)
+        .wrap_err("Contig is not in the BAM file")
+        .wrap_err_with(fetch_error)?;
+    let (Some(first), Some(last)) =
+        (pos(segment.region.start), segment.region.end.checked_sub(1).and_then(pos))
+    else {
+        return Ok(res);
+    };
+    let mut query = readers.bam.query_raw(tid, (first..=last).into()).wrap_err_with(fetch_error)?;
+
+    let mut record = RawBamRecord::default();
+    while query.read_record(&mut record).wrap_err("Failed to read BAM record")? {
         // Ignore reads that another segment owns
-        let record_start =
-            u64::try_from(record.pos()).wrap_err("read start does not fit in u64")?;
+        let Some(record_start) = record.pos().map(|pos| pos.as_u64()) else { continue };
         if record_start < start || record_start >= end {
             continue;
         }
         if !params
             .read_flags
-            .filter_flags(record.flags(), Pairing::from_unpaired_flag(params.unpaired))
+            .filter_flags(record.flags().raw(), Pairing::from_unpaired_flag(params.unpaired))
         {
             continue;
         }
-        if !MappingQuality::from_byte(record.mapq())
-            .at_least(MappingQuality::from_byte(params.min_mapq))
-        {
+        if !record.mapq().at_least(MappingQuality::from_byte(params.min_mapq)) {
             continue;
         }
         if record.seq_len() > params.max_read_length as usize {
             continue;
         }
 
-        record.cache_cigar();
         let row = record_to_row(
             &record,
             &segment,
@@ -336,7 +339,7 @@ fn process_region(
 }
 
 fn record_to_row(
-    record: &Record,
+    record: &RawBamRecord,
     segment: &Segment,
     calls: &FxHashMap<usize, RastairCall>,
     exclude_ambiguous: bool,
@@ -347,10 +350,16 @@ fn record_to_row(
     let segment_start_pos =
         usize::try_from(segment.range.start).wrap_err("segment range exceeded usize")?;
     let ref_seq = &segment.sequence;
-    let read_seq = record.seq();
-    let cigar = record.cigar();
-    let clipping_length = usize::try_from(cigar.leading_softclips() + cigar.leading_hardclips())
-        .wrap_err("clipping length exceeded usize")?;
+    let mut read_seq = Vec::with_capacity(record.seq_len());
+    record.decode_seq_into(&mut read_seq);
+    let clipping_length: u32 = record
+        .cigar()
+        .iter()
+        .take_while(|op| matches!(op.op_type(), CigarOpType::SoftClip | CigarOpType::HardClip))
+        .map(|op| op.len())
+        .sum();
+    let clipping_length =
+        usize::try_from(clipping_length).wrap_err("clipping length exceeded usize")?;
 
     let strand = if guess_read_orientation {
         Some(infer_strand_from_mismatch_motifs(record, segment))
@@ -366,20 +375,14 @@ fn record_to_row(
     let mut mod_denovos = SmallVec::new();
     let mut unmod_denovos = SmallVec::new();
 
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
-        let Some(pos_in_read) = pos_in_read else {
-            continue;
-        };
-        let Some(pos_in_ref) = pos_in_ref else {
-            continue;
-        };
-        let pos_in_read =
-            usize::try_from(pos_in_read).wrap_err("position in read exceeded usize")?;
-        let pos_in_ref = usize::try_from(pos_in_ref).wrap_err("position in ref exceeded usize")?;
+    for MatchPosition { qpos, rpos, .. } in crate::bam::aligned_bases(record) {
+        let pos_in_read = qpos.as_usize();
+        let pos_in_ref = rpos.as_usize();
         let idx = pos_in_ref
             .checked_sub(segment_start_pos)
             .wrap_err("Failed to calculate index for position")?;
-        let read_base = Base::from(read_seq[pos_in_read]);
+        let read_base =
+            read_seq.get(pos_in_read).map(Base::from).wrap_err("reading base from read")?;
         let ref_base =
             ref_seq.get(idx).map(Base::from).wrap_err("reading ref base from sequence")?;
         let pos_rel = if count_clipped {
@@ -415,15 +418,18 @@ fn record_to_row(
         }
     }
 
+    let start = record.pos().wrap_err("record has no position")?;
+    // One past the last reference base; a record that consumes no reference
+    // ends where it starts.
+    let end = record.end_pos().map_or(start.as_u64(), |last| last.as_u64().saturating_add(1));
     Ok(PerRead {
-        region: Region {
-            contig: segment.range.contig.clone(),
-            start: u64::try_from(record.pos()).wrap_err("start pos does not fit in u64")?,
-            end: u64::try_from(cigar.end_pos()).wrap_err("end pos does not fit in u64")?,
-        },
-        flag: record.flags(),
-        mapq: MappingQuality::from_byte(record.mapq()),
-        frag_length: record.insert_size().unsigned_abs(),
+        region: Region { contig: segment.range.contig.clone(), start: start.as_u64(), end },
+        flag: record.flags().raw(),
+        mapq: record.mapq(),
+        frag_length: record
+            .mate_fields()
+            .template_len
+            .map_or(0, |length| u64::from(length.get().unsigned_abs())),
         read_length: record.seq_len(),
         read_id: String::from_utf8(Vec::from(record.qname())).unwrap_or_default(),
         cpg_count,
@@ -436,18 +442,37 @@ fn record_to_row(
     })
 }
 
-fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> Option<Strand> {
+/// The directions of a pair's first and second read, where the record says
+/// how the pair lies: both reads mapped to one contig, at different starts.
+fn pair_directions(record: &RawBamRecord) -> Option<[bool; 2]> {
+    let flags = record.flags();
+    let mate = record.mate_fields();
+    let determined = flags.is_paired()
+        && !flags.is_unmapped()
+        && !flags.is_mate_unmapped()
+        && record.tid() == mate.tid
+        && record.pos() != mate.pos;
+    let (own, mates) = (!flags.is_reverse(), !flags.is_mate_reverse());
+    determined.then_some(if flags.is_first_in_template() { [own, mates] } else { [mates, own] })
+}
+
+fn orientation(
+    bam_record: &RawBamRecord,
+    exclude_ambiguous: bool,
+    unpaired: bool,
+) -> Option<Strand> {
+    let flags = bam_record.flags();
     if unpaired {
-        return Some(if bam_record.is_reverse() { Strand::OB } else { Strand::OT });
+        return Some(if flags.is_reverse() { Strand::OB } else { Strand::OT });
     }
 
-    use SequenceReadPairOrientation::{F1R2, F2R1, R1F2, R2F1};
-
-    let read_pair_orientation = bam_record.read_pair_orientation();
-    match read_pair_orientation {
-        F1R2 | R2F1 => Some(Strand::OT),
-        F2R1 | R1F2 => Some(Strand::OB),
-        SequenceReadPairOrientation::None => {
+    match pair_directions(bam_record) {
+        // F1R2 or R2F1
+        Some([true, false]) => Some(Strand::OT),
+        // F2R1 or R1F2
+        Some([false, true]) => Some(Strand::OB),
+        Some(_) => None,
+        None => {
             if exclude_ambiguous {
                 return None;
             }
@@ -456,55 +481,27 @@ fn orientation(bam_record: &Record, exclude_ambiguous: bool, unpaired: bool) -> 
                 String::from_utf8(Vec::from(bam_record.qname())).unwrap_or_default()
             );
 
-            if bam_record.is_first_in_template() && bam_record.is_mate_reverse()
-                || bam_record.is_last_in_template() && bam_record.is_reverse()
+            if flags.is_first_in_template() && flags.is_mate_reverse()
+                || flags.is_second_in_template() && flags.is_reverse()
             {
                 Some(Strand::OT)
             }
             // F2R1
-            else if bam_record.is_first_in_template() && bam_record.is_reverse()
-                || bam_record.is_last_in_template() && bam_record.is_mate_reverse()
+            else if flags.is_first_in_template() && flags.is_reverse()
+                || flags.is_second_in_template() && flags.is_mate_reverse()
             {
                 Some(Strand::OB)
             } else {
                 None
             }
         }
-        _ => None, // This should be impossible?
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sequence::{ChunkRegion, Region};
-    use rust_htslib::bam::record::{Cigar, CigarString};
-
-    fn test_segment(sequence: &[u8]) -> Segment {
-        let start = 100u64;
-        let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
-        Segment {
-            range: std::sync::Arc::new(ChunkRegion {
-                region: Region { contig: "chrTest".into(), start, end },
-                last_position: end,
-                overlap_start: 0,
-                overlap_end: 0,
-            }),
-            sequence: sequence.to_vec(),
-        }
-    }
-
-    fn test_record(qname: &[u8], flags: u16, start: i64, sequence: &[u8]) -> Record {
-        let mut record = Record::new();
-        let cigar = CigarString(
-            vec![Cigar::Match(u32::try_from(sequence.len()).expect("sequence length fits in u32"))]
-                .into(),
-        );
-        record.set(qname, Some(&cigar), sequence, &vec![40; sequence.len()]);
-        record.set_flags(flags);
-        record.set_pos(start);
-        record
-    }
+    use crate::call_reads::hts_utils::tests::{test_record, test_segment};
 
     // Flags for F1R2 (OT) and R1F2 (OB) paired-end reads, using the standard bit layout:
     // paired(0x1) + proper_pair(0x2) + mate_reverse(0x20) + first_in_pair(0x40) = 99  → F1 of F1R2
@@ -667,40 +664,56 @@ mod tests {
         assert!(row.snp_cpgs.is_empty());
     }
 
+    /// A read with only its flags set.
+    fn flagged(flags: u16) -> RawBamRecord {
+        test_record(b"read", flags, 100, b"ACGT")
+    }
+
     #[test]
     fn orientation_single_end_uses_alignment_strand() {
-        let mut record = Record::new();
-
-        record.set_flags(0x0); // single-end forward
+        let record = flagged(0x0); // single-end forward
         assert_eq!(orientation(&record, true, true), Some(Strand::OT));
         assert_eq!(orientation(&record, false, true), Some(Strand::OT));
 
-        record.set_flags(0x10); // single-end reverse
+        let record = flagged(0x10); // single-end reverse
         assert_eq!(orientation(&record, true, true), Some(Strand::OB));
         assert_eq!(orientation(&record, false, true), Some(Strand::OB));
     }
 
     #[test]
     fn orientation_single_end_without_mode_stays_unknown() {
-        let mut record = Record::new();
-
-        record.set_flags(0x0);
+        let record = flagged(0x0);
         assert_eq!(orientation(&record, true, false), None);
         assert_eq!(orientation(&record, false, false), None);
 
-        record.set_flags(0x10);
+        let record = flagged(0x10);
         assert_eq!(orientation(&record, true, false), None);
         assert_eq!(orientation(&record, false, false), None);
     }
 
     #[test]
     fn orientation_unpaired_mode_ignores_pairing_flags() {
-        let mut record = Record::new();
-
-        record.set_flags(0x80 | 0x20); // would be OB in paired logic
+        let record = flagged(0x80 | 0x20); // would be OB in paired logic
         assert_eq!(orientation(&record, true, true), Some(Strand::OT));
 
-        record.set_flags(0x40 | 0x10); // reverse always means OB
+        let record = flagged(0x40 | 0x10); // reverse always means OB
         assert_eq!(orientation(&record, true, true), Some(Strand::OB));
+    }
+
+    /// The pair's layout decides where the flags are complete: read 1 forward
+    /// and read 2 reverse is OT whichever comes first, the opposite OB, and
+    /// two reads in one direction say nothing.
+    #[test]
+    fn orientation_of_a_pair_follows_both_reads_directions() {
+        for (flags, strand) in [
+            (0x1 | 0x40 | 0x20, Some(Strand::OT)), // F1, mate reverse
+            (0x1 | 0x80 | 0x10, Some(Strand::OT)), // R2, mate forward
+            (0x1 | 0x40 | 0x10, Some(Strand::OB)), // R1, mate forward
+            (0x1 | 0x80 | 0x20, Some(Strand::OB)), // F2, mate reverse
+            (0x1 | 0x40, None),                    // F1, mate forward
+            (0x1 | 0x80 | 0x10 | 0x20, None),      // R2, mate reverse
+        ] {
+            assert_eq!(orientation(&flagged(flags), true, false), strand, "flags {flags:#x}");
+        }
     }
 }

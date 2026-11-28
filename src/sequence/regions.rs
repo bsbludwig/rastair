@@ -3,7 +3,6 @@ use color_eyre::{
     Result,
     eyre::{Context as _, ContextCompat, ensure},
 };
-use rust_htslib::bam::FetchDefinition;
 use seqair_types::{Pos0, SmolStr};
 use std::fmt;
 use tracing::warn;
@@ -36,17 +35,6 @@ impl Region {
 
     pub fn is_empty(&self) -> bool {
         self.end <= self.start
-    }
-}
-
-impl<'reg> TryFrom<&'reg Region> for FetchDefinition<'reg> {
-    type Error = color_eyre::Report;
-
-    fn try_from(region: &'reg Region) -> Result<Self> {
-        let start = i64::try_from(region.start).wrap_err("start is invalid i64")?;
-        let end = i64::try_from(region.end).wrap_err("end is invalid i64")?;
-
-        Ok(FetchDefinition::RegionString(region.contig.as_bytes(), start, end))
     }
 }
 

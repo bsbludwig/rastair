@@ -12,8 +12,9 @@ any other method that converts 5mC to T.
 
 To build rastair, you'll need:
 
-- Rust (version 1.88 or later)
-- `libclang-dev` and `cmake`
+- Rust: `rustup` installs the version `rust-toolchain.toml` names (1.100.1)
+- a C compiler
+- `cmake`, to run the tests (they build htslib to read rastair's output back)
 
 Then you can build it with:
 

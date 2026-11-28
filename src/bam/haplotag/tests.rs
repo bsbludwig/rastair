@@ -1,8 +1,8 @@
 use super::*;
 use Base::{A, C, G, T};
-use bcf::Read as _;
+use color_eyre::eyre::ensure;
 use hegel::{TestCase, generators as gs};
-use rust_htslib::bam::record::{Cigar, CigarString};
+use seqair::{bam::aux::find_tag, reader::AlignmentStream};
 
 fn bases() -> impl gs::PrintableGenerator<Base> {
     gs::sampled_from([A, C, G, T].as_slice())
@@ -183,14 +183,33 @@ fn the_phase_set_with_the_widest_margin_tags_the_fragment() {
     assert_eq!(assign([vote(7, One, 30), vote(9, Two, 30)]), tag(7, One));
 }
 
-/// A forward first-in-pair read (OT) of `seq` at `pos`, every base at
-/// quality 30.
-fn read(name: &[u8], pos: i64, cigar: Vec<Cigar>, seq: &[u8]) -> Record {
-    let mut record = Record::new();
-    record.set(name, Some(&CigarString(cigar.into())), seq, &vec![30; seq.len()]);
-    record.set_pos(pos);
-    record.set_flags(99);
-    record
+/// The records of SAM lines on contig `chr1`, their fields separated by
+/// spaces; read through the stream reader, since a record has no public
+/// constructor.
+fn records(lines: &[String]) -> Result<Vec<RawBamRecord>> {
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000000\n");
+    for line in lines {
+        sam.push_str(&line.replace(' ', "\t"));
+        sam.push('\n');
+    }
+    let mut stream = AlignmentStream::from_reader(std::io::Cursor::new(sam.into_bytes()))?;
+    let mut records = Vec::new();
+    let mut record = RawBamRecord::default();
+    while stream.read_record(&mut record)? {
+        records.push(record.clone());
+    }
+    ensure!(records.len() == lines.len(), "a SAM line did not parse");
+    Ok(records)
+}
+
+/// The SAM line of a forward first-in-pair read (OT) of `seq` at the 0-based
+/// `pos`, every base at quality 30.
+fn sam(name: &str, pos: u64, cigar: &str, seq: &str) -> String {
+    format!("{name} 99 chr1 {} 60 {cigar} = {} 0 {seq} {}", pos + 1, pos + 1, "?".repeat(seq.len()))
+}
+
+fn read(name: &str, pos: u64, cigar: &str, seq: &str) -> Result<RawBamRecord> {
+    records(&[sam(name, pos, cigar, seq)])?.pop().wrap_err("no record")
 }
 
 fn snv(pos: u32, set: i32, alleles: [Base; 2]) -> PhasedSite {
@@ -207,11 +226,10 @@ fn a_read_votes_at_the_sites_it_aligns_a_base_to() -> Result<()> {
         snv(109, 200, [A, G]), // read shows T: neither
         snv(110, 200, [A, C]), // past the read's end
     ];
-    //            100  101  102  103 | 104-106 deleted | 107 108 109
-    let seq = b"AAGAAGT";
-    let record = read(b"r", 100, vec![Cigar::Match(4), Cigar::Del(3), Cigar::Match(3)], seq);
+    // 100 101 102 103 | 104-106 deleted | 107 108 109
+    let record = read("r", 100, "4M3D3M", "AAGAAGT")?;
 
-    let votes = votes_of(&record, &sites)?;
+    let votes = votes_of(&record, &sites);
     assert_eq!(
         &votes[..],
         &[vote(100, Haplotype::Two, 30), vote(100, Haplotype::One, 30)],
@@ -224,15 +242,12 @@ fn a_read_votes_at_the_sites_it_aligns_a_base_to() -> Result<()> {
 /// has moved the read's bases against the reference.
 #[test]
 fn a_vote_carries_the_quality_of_the_base_that_decides_it() -> Result<()> {
-    let mut record =
-        read(b"r", 100, vec![Cigar::Match(2), Cigar::Ins(2), Cigar::Match(2)], b"AATTGA");
-    let quals = [10, 11, 12, 13, 14, 15];
-    let seq = record.seq().as_bytes();
-    let cigar = record.cigar().take();
-    record.set(b"r", Some(&cigar), &seq, &quals);
+    // Qualities 10 to 15.
+    let line = "r 99 chr1 101 60 2M2I2M = 101 0 AATTGA +,-./0".to_owned();
+    let record = records(&[line])?.pop().wrap_err("no record")?;
 
     // Reference 102 is the read's fifth base.
-    let votes = votes_of(&record, &[snv(102, 100, [C, G])])?;
+    let votes = votes_of(&record, &[snv(102, 100, [C, G])]);
     assert_eq!(&votes[..], &[vote(100, Haplotype::Two, 14)]);
 
     // An insertion of TT after reference 101, against a reference that goes
@@ -242,8 +257,18 @@ fn a_vote_carries_the_quality_of_the_base_that_decides_it() -> Result<()> {
         set: 100,
         alleles: SiteAlleles::Indel([b"GAC".to_vec(), b"TTGAC".to_vec()]),
     };
-    let votes = votes_of(&record, &[site])?;
+    let votes = votes_of(&record, &[site]);
     assert_eq!(&votes[..], &[vote(100, Haplotype::Two, 12)]);
+    Ok(())
+}
+
+/// A read stored without qualities still votes, every base alike.
+#[test]
+fn a_read_without_qualities_votes() -> Result<()> {
+    let line = "r 99 chr1 101 60 5M = 101 0 AAGAA *".to_owned();
+    let record = records(&[line])?.pop().wrap_err("no record")?;
+    let votes = votes_of(&record, &[snv(102, 100, [A, G])]);
+    assert_eq!(&votes[..], &[vote(100, Haplotype::Two, NO_QUALITY_WEIGHT)]);
     Ok(())
 }
 
@@ -251,14 +276,50 @@ fn a_vote_carries_the_quality_of_the_base_that_decides_it() -> Result<()> {
 /// clipped at the read's end is read from it.
 #[test]
 fn an_indel_is_read_from_a_soft_clip() -> Result<()> {
-    let record = read(b"r", 100, vec![Cigar::Match(3), Cigar::SoftClip(4)], b"ACATTGA");
+    let record = read("r", 100, "3M4S", "ACATTGA")?;
     let site = PhasedSite {
         pos: 102,
         set: 100,
         alleles: SiteAlleles::Indel([b"GACCA".to_vec(), b"TTGACCA".to_vec()]),
     };
-    assert_eq!(&votes_of(&record, &[site])?[..], &[vote(100, Haplotype::Two, 30)]);
+    assert_eq!(&votes_of(&record, &[site])[..], &[vote(100, Haplotype::Two, 30)]);
     Ok(())
+}
+
+fn int_tag(record: &RawBamRecord, tag: &[u8; 2]) -> Option<i64> {
+    find_tag(record.aux().as_bytes(), *tag)?.as_i64()
+}
+
+/// A read's name and start, and its `(HP, PS)`.
+type Tagged = (String, u64, Option<(i64, i64)>);
+
+fn tags_of(batches: &[(Vec<RawBamRecord>, u8)]) -> Vec<Tagged> {
+    batches
+        .iter()
+        .flat_map(|(records, _)| records)
+        .map(|record| {
+            (
+                String::from_utf8_lossy(record.qname()).into_owned(),
+                record.pos().map_or(0, |pos| pos.as_u64()),
+                int_tag(record, b"HP").zip(int_tag(record, b"PS")),
+            )
+        })
+        .collect()
+}
+
+/// Push `lines` as one batch, numbered `with`, voting at `sites`.
+fn push(
+    tagger: &mut Tagger<u8>,
+    sites: &[PhasedSite],
+    lines: &[String],
+    with: u8,
+) -> Result<Vec<(Vec<RawBamRecord>, u8)>> {
+    let records = records(lines)?;
+    let mut votes = BatchVotes::default();
+    for record in &records {
+        votes.add(record, sites);
+    }
+    tagger.push(records, votes, with)
 }
 
 /// Mates vote together, so the one over no site is tagged as well; an
@@ -266,139 +327,125 @@ fn an_indel_is_read_from_a_soft_clip() -> Result<()> {
 #[test]
 fn mates_within_reach_share_one_tag() -> Result<()> {
     let sites = [snv(102, 100, [A, G])];
-    let left = read(b"pair", 100, vec![Cigar::Match(5)], b"AAGAA");
-    let near = read(b"pair", 100 + MATE_REACH.cast_signed(), vec![Cigar::Match(5)], b"AAAAA");
-    let far = read(b"pair", 101 + MATE_REACH.cast_signed(), vec![Cigar::Match(5)], b"AAAAA");
-    let stranger = read(b"other", 100, vec![Cigar::Match(5)], b"AATAA");
+    let mut tagger = Tagger::default();
+    let held = push(
+        &mut tagger,
+        &sites,
+        &[
+            sam("pair", 100, "5M", "AAGAA"),
+            sam("other", 100, "5M", "AATAA"),
+            sam("pair", 100 + MATE_REACH, "5M", "AAAAA"),
+            sam("pair", 101 + MATE_REACH, "5M", "AAAAA"),
+        ],
+        1,
+    )?;
+    assert!(held.is_empty(), "a batch waits for the input to move past it");
 
-    let mut fragments = Fragments::default();
-    for record in [&left, &near, &far, &stranger] {
-        fragments.add(record, &sites)?;
-    }
+    let tag = Some((2, 100));
+    assert_eq!(
+        tags_of(&tagger.finish()?),
+        [
+            ("pair".to_owned(), 100, tag),
+            ("other".to_owned(), 100, None),
+            ("pair".to_owned(), 100 + MATE_REACH, tag),
+            ("pair".to_owned(), 101 + MATE_REACH, None),
+        ]
+    );
+    Ok(())
+}
 
-    let tag = Some(HaplotypeTag { set: 100, haplotype: Haplotype::Two });
-    assert_eq!(fragments.tag_of(&left), tag);
-    assert_eq!(fragments.tag_of(&near), tag);
-    assert_eq!(fragments.tag_of(&far), None);
-    assert_eq!(fragments.tag_of(&stranger), None);
+/// The mate arrives a batch later, and the read over no site is the earlier
+/// one: its batch is held until the input has moved out of reach, then both
+/// come out tagged alike, in input order, each batch with what rode along.
+#[test]
+fn a_batch_waits_for_the_mates_in_the_next_one() -> Result<()> {
+    let sites = [snv(402, 100, [A, G])];
+    let mut tagger = Tagger::default();
+
+    let first = push(&mut tagger, &sites, &[sam("pair", 100, "5M", "AAAAA")], 1)?;
+    assert!(first.is_empty());
+    let second = push(&mut tagger, &sites, &[sam("pair", 400, "5M", "AAGAA")], 2)?;
+    assert!(second.is_empty(), "the first batch's last read still reaches the second's first");
+
+    // Out of reach of the second batch's last read, so both are settled.
+    let far = 401 + MATE_REACH;
+    let third = push(&mut tagger, &sites, &[sam("far", far, "5M", "AAAAA")], 3)?;
+    assert_eq!(third.iter().map(|(_, with)| *with).collect::<Vec<_>>(), [1, 2]);
+    let tag = Some((2, 100));
+    assert_eq!(tags_of(&third), [("pair".to_owned(), 100, tag), ("pair".to_owned(), 400, tag)]);
+    assert!(tagger.votes.is_empty(), "votes out of reach are dropped: {:?}", tagger.votes);
+
+    assert_eq!(tags_of(&tagger.finish()?), [("far".to_owned(), far, None)]);
+    Ok(())
+}
+
+/// Votes are kept past their batch for the mates that come later: the batch
+/// with the voting read is handed on while its mate's batch, which reaches
+/// further, is still held.
+#[test]
+fn a_handed_on_batch_still_votes_for_later_mates() -> Result<()> {
+    let sites = [snv(102, 100, [A, G])];
+    let tag = Some((2, 100));
+    let mut tagger = Tagger::default();
+    push(&mut tagger, &sites, &[sam("pair", 100, "5M", "AAGAA")], 1)?;
+    let mate = [sam("pair", 900, "5M", "AAAAA"), sam("far", 5000, "5M", "AAAAA")];
+    assert!(push(&mut tagger, &sites, &mate, 2)?.is_empty());
+
+    let handed_on = push(&mut tagger, &sites, &[sam("next", 5001, "5M", "AAAAA")], 3)?;
+    assert_eq!(tags_of(&handed_on), [("pair".to_owned(), 100, tag)]);
+
+    let later = push(&mut tagger, &sites, &[sam("last", 9000, "5M", "AAAAA")], 4)?;
+    assert_eq!(
+        tags_of(&later),
+        [
+            ("pair".to_owned(), 900, tag),
+            ("far".to_owned(), 5000, None),
+            ("next".to_owned(), 5001, None)
+        ]
+    );
+    assert!(tagger.votes.is_empty(), "votes out of reach are dropped: {:?}", tagger.votes);
+    Ok(())
+}
+
+/// Unplaced records end a sorted input, so the batches before them are
+/// handed on, and they come out untagged themselves.
+#[test]
+fn unplaced_records_settle_the_batches_before_them() -> Result<()> {
+    let sites = [snv(102, 100, [A, G])];
+    let mut tagger = Tagger::default();
+    push(&mut tagger, &sites, &[sam("read", 100, "5M", "AAGAA")], 1)?;
+    let unplaced = "lost 4 * 0 0 * * 0 0 ACGT ???? HP:i:1 PS:i:7".to_owned();
+    let handed_on = push(&mut tagger, &sites, &[unplaced], 2)?;
+    assert_eq!(tags_of(&handed_on), [("read".to_owned(), 100, Some((2, 100)))]);
+    assert_eq!(tags_of(&tagger.finish()?), [("lost".to_owned(), 0, None)]);
     Ok(())
 }
 
 #[test]
 fn tagging_replaces_the_tags_a_read_came_with() -> Result<()> {
     let sites = [snv(102, 100, [A, G])];
-    let int = |record: &Record, tag: &[u8]| match record.aux(tag) {
-        Ok(Aux::U8(value)) => Some(i32::from(value)),
-        Ok(Aux::I32(value)) => Some(value),
-        _ => None,
-    };
-
-    let mut tagged = read(b"tagged", 100, vec![Cigar::Match(5)], b"AAGAA");
-    let mut untagged = read(b"untagged", 100, vec![Cigar::Match(5)], b"AATAA");
-    for record in [&mut tagged, &mut untagged] {
-        record.push_aux(b"HP", Aux::U8(1))?;
-        record.push_aux(b"PS", Aux::I32(5))?;
-        record.push_aux(b"NM", Aux::U8(0))?;
-    }
-    let mut fragments = Fragments::default();
-    fragments.add(&tagged, &sites)?;
-    fragments.add(&untagged, &sites)?;
-    fragments.tag(&mut tagged)?;
-    fragments.tag(&mut untagged)?;
-
-    assert_eq!((int(&tagged, b"HP"), int(&tagged, b"PS")), (Some(2), Some(100)));
-    assert_eq!((int(&untagged, b"HP"), int(&untagged, b"PS")), (None, None), "stale tags");
-    assert_eq!(int(&untagged, b"NM"), Some(0), "other tags stay");
-    Ok(())
-}
-
-/// The phased sites of VCF data lines on contig `chr1`, whose reference from
-/// any position on is `flank`.
-fn sites_of(lines: &[&str], flank: &[u8]) -> Result<Vec<Option<PhasedSite>>> {
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("calls.vcf");
-    let mut vcf = String::from(
-        "##fileformat=VCFv4.2\n\
-         ##contig=<ID=chr1,length=1000>\n\
-         ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
-         ##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"Phase set\">\n\
-         #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n",
-    );
-    for line in lines {
-        vcf.push_str(&line.replace(' ', "\t"));
-        vcf.push('\n');
-    }
-    std::fs::write(&path, vcf)?;
-
-    let mut reader = bcf::Reader::from_path(&path)?;
-    reader
-        .records()
-        .map(|record| PhasedSite::from_record(&record?, |_| Ok(flank.to_vec())))
-        .collect()
-}
-
-#[test]
-fn a_phased_het_with_a_phase_set_is_a_site() -> Result<()> {
-    let sites = sites_of(
+    let stale = " HP:i:1 PS:i:5 NM:i:0";
+    let mut tagger = Tagger::default();
+    push(
+        &mut tagger,
+        &sites,
         &[
-            "chr1 10 . A G . PASS . GT:PS 0|1:10",
-            "chr1 20 . A G . PASS . GT:PS 1|0:10",
-            "chr1 30 . A C,G . PASS . GT:PS 2|1:10",
-            "chr1 40 . A G . PASS . GT:PS 0/1:.",
-            "chr1 50 . A G . PASS . GT:PS 1|1:10",
-            "chr1 60 . A G . PASS . GT:PS 0|1:.",
-            "chr1 70 . A G . PASS . GT 0|1",
-            "chr1 80 . A * . PASS . GT:PS 0|1:10",
-            "chr1 90 . A . . PASS . GT:PS 0/0:.",
+            sam("tagged", 100, "5M", "AAGAA") + stale,
+            sam("untagged", 100, "5M", "AATAA") + stale,
+            sam("untouched", 100, "5M", "AATAA") + " NM:i:0",
         ],
-        b"",
+        1,
     )?;
-    assert_eq!(
-        sites,
-        [
-            Some(snv(9, 10, [A, G])),
-            Some(snv(19, 10, [G, A])),
-            Some(snv(29, 10, [G, C])),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ]
-    );
-    Ok(())
-}
+    let batches = tagger.finish()?;
+    let [tagged, untagged, untouched] = batches
+        .first()
+        .and_then(|(records, _)| <&[RawBamRecord; 3]>::try_from(&records[..]).ok())
+        .wrap_err("three records")?;
 
-/// An indel site's haplotypes are spelled past the anchor: the allele's own
-/// bases, then the reference after `REF`.
-#[test]
-fn an_indel_site_spells_both_haplotypes_into_the_reference() -> Result<()> {
-    let sites = sites_of(
-        &[
-            "chr1 10 . A ATT . PASS . GT:PS 0|1:10",
-            "chr1 20 . ACC A . PASS . GT:PS 1|0:10",
-            "chr1 30 . ACC A,AGGCC . PASS . GT:PS 1|2:10",
-            "chr1 40 . AC GT . PASS . GT:PS 0|1:10",
-        ],
-        b"gact",
-    )?;
-    let indel = |pos, haplotypes: [&[u8]; 2]| {
-        Some(PhasedSite {
-            pos,
-            set: 10,
-            alleles: SiteAlleles::Indel(haplotypes.map(<[u8]>::to_vec)),
-        })
-    };
-    assert_eq!(
-        sites,
-        [
-            indel(9, [b"GACT", b"TTGACT"]),
-            indel(19, [b"GACT", b"CCGACT"]),
-            indel(29, [b"GACT", b"GGCCGACT"]),
-            // No shared anchor base to compare from.
-            None,
-        ]
-    );
+    assert_eq!((int_tag(tagged, b"HP"), int_tag(tagged, b"PS")), (Some(2), Some(100)));
+    assert_eq!((int_tag(untagged, b"HP"), int_tag(untagged, b"PS")), (None, None), "stale tags");
+    for record in [tagged, untagged, untouched] {
+        assert_eq!(int_tag(record, b"NM"), Some(0), "other tags stay");
+    }
     Ok(())
 }

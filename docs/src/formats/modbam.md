@@ -66,6 +66,7 @@ A BED file holds no phase, so with one the reads keep whatever `HP` and `PS` the
 
 A read pair is tagged as a whole, from the phased heterozygous variants either of its reads shows,
 so a read that covers none of them takes its mate's tag (if the mate starts within 1,000 bases).
+With `--region`, a mate outside the regions is not read and does not count.
 Each variant counts with the quality of the base that shows it, and the phase set the read pair agrees with most clearly gives the tag.
 Read pairs that cover no phased variant, or support both haplotypes equally, get no tags, and lose any they came with.
 

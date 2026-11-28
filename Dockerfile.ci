@@ -22,7 +22,8 @@ FROM condaforge/mambaforge:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system deps for building rust-htslib
+# Install system deps for building rust-htslib, which the tests read
+# rastair's output with (rastair itself does not link it)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config curl ca-certificates libclang-dev \
     && rm -rf /var/lib/apt/lists/*

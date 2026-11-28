@@ -5,7 +5,6 @@ use crate::utils::Base;
 use clio::ClioPath;
 use color_eyre::Result;
 use hegel::{TestCase, generators as gs};
-use rust_htslib::bam::FetchDefinition;
 use std::path::PathBuf;
 
 fn test_data_dir() -> PathBuf {
@@ -114,33 +113,6 @@ fn test_overlapping_segments() -> Result<()> {
         let overlap_first = &first.sequence[first_start_idx..first_end_idx];
         let overlap_second = &second.sequence[second_start_idx..second_end_idx];
         assert_eq!(overlap_first, overlap_second, "Overlapping sequences should match");
-    }
-
-    Ok(())
-}
-
-#[test]
-fn test_segment_to_fetch_definition() -> Result<()> {
-    // Create a test segment
-    let region = ChunkRegion {
-        region: Region { contig: "chr19".into(), start: 6105700, end: 6105800 },
-        last_position: 6105900,
-        overlap_start: 0,
-        overlap_end: 0,
-    };
-    let segment =
-        Segment { range: std::sync::Arc::new(region.clone()), sequence: vec![65, 66, 67] }; // "ABC"
-
-    // Convert to FetchDefinition
-    let fetch_def = FetchDefinition::try_from(&segment.region)?;
-
-    // Verify conversion worked correctly
-    if let FetchDefinition::RegionString(chr, start, end) = fetch_def {
-        assert_eq!(chr, b"chr19");
-        assert_eq!(start, 6105700);
-        assert_eq!(end, 6105800); // exclusive, like the region's
-    } else {
-        panic!("Unexpected FetchDefinition variant");
     }
 
     Ok(())

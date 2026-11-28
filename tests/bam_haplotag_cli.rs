@@ -6,7 +6,7 @@ mod utils;
 use rust_htslib::bam::{self, Read as _, record::Aux};
 use std::collections::BTreeMap;
 use utils::{
-    scenario::{Hap, READ_LEN, Scenario, Strand},
+    scenario::{Hap, Scenario, Strand},
     *,
 };
 
@@ -42,17 +42,21 @@ impl Called {
         self.dir.path().join(name)
     }
 
-    /// Run `bam <mode>` with `calls` and return its records.
-    fn rewrite(&self, mode: &str, calls: &str, extra: &[&str]) -> Result<Vec<bam::Record>> {
+    /// Run `bam <mode>` with `calls` and return its records. With `batch`,
+    /// the input is cut into batches of that many records (debug builds).
+    fn rewrite(&self, mode: &str, calls: &str, batch: Option<usize>) -> Result<Vec<bam::Record>> {
         let out = self.path("out.bam");
-        rastair()
+        let mut command = rastair();
+        if let Some(batch) = batch {
+            command.env("RASTAIR_BAM_BATCH_RECORDS", batch.to_string());
+        }
+        command
             .args(["bam", mode, "--fasta-file"])
             .arg(self.path("ref.fa"))
             .arg(self.path("reads.bam"))
             .arg(self.path(calls))
             .arg("-o")
             .arg(&out)
-            .args(extra)
             .silent()
             .succeeds()
             .wrap_err("bam")?;
@@ -63,8 +67,8 @@ impl Called {
     /// The tags `bam` gives every read from the VCF, checked against the
     /// scenario: within a phase set, `HP` 1 holds reads of one haplotype only
     /// and `HP` 2 reads of the other only, and mates agree.
-    fn tags(&self, mode: &str, extra: &[&str]) -> Result<Tags> {
-        Tags::of(&self.scenario, &self.rewrite(mode, "calls.vcf.gz", extra)?)
+    fn tags(&self, mode: &str, batch: Option<usize>) -> Result<Tags> {
+        Tags::of(&self.scenario, &self.rewrite(mode, "calls.vcf.gz", batch)?)
     }
 }
 
@@ -153,7 +157,7 @@ fn two_sites_under_the_left_read() -> Scenario {
 fn read_pairs_are_tagged_with_their_haplotype_and_phase_set() -> Result<()> {
     let called = Called::new(two_sites_under_the_left_read())?;
     for mode in ["standard", "legacy"] {
-        let tags = called.tags(mode, &[])?;
+        let tags = called.tags(mode, None)?;
         assert_eq!(tags.untagged, BTreeSet::new(), "{mode}");
         assert_eq!(
             tags.sets.keys().copied().collect::<Vec<_>>(),
@@ -176,8 +180,8 @@ fn bed_calls_give_the_same_reads_without_haplotype_tags() -> Result<()> {
     let called = Called::new(scenario)?;
 
     for mode in ["standard", "legacy"] {
-        let from_bed = called.rewrite(mode, "calls.bed.gz", &[])?;
-        let mut from_vcf = called.rewrite(mode, "calls.vcf.gz", &[])?;
+        let from_bed = called.rewrite(mode, "calls.bed.gz", None)?;
+        let mut from_vcf = called.rewrite(mode, "calls.vcf.gz", None)?;
         ensure!(from_vcf.iter().any(|record| record.aux(b"HP").is_ok()), "no read was tagged");
         let methylation_tag: &[u8] = if mode == "standard" { b"MM" } else { b"XM" };
         ensure!(
@@ -212,7 +216,7 @@ fn a_converted_read_is_not_tagged_as_the_alt() -> Result<()> {
         .balanced(LEFT, RIGHT, 8);
     let called = Called::new(scenario)?;
 
-    let tags = called.tags("standard", &[])?;
+    let tags = called.tags("standard", None)?;
     assert_eq!(tags.untagged, BTreeSet::new());
     assert_eq!(tags.sets.len(), 1, "{:?}", tags.sets);
     Ok(())
@@ -230,34 +234,37 @@ fn reads_are_tagged_from_an_indel() -> Result<()> {
         .balanced(LEFT, RIGHT, 8);
     let called = Called::new(scenario)?;
 
-    let tags = called.tags("legacy", &[])?;
+    let tags = called.tags("legacy", None)?;
     assert_eq!(tags.untagged, BTreeSet::new());
     assert_eq!(tags.haplotypes(INSERTION + 1), Some([Hap::Two, Hap::One]), "{:?}", tags.sets);
     Ok(())
 }
 
-/// A read pair is tagged the same however the run is cut into segments: with
-/// 1000-base segments the left reads at 900 are in the first segment and
-/// their mates, which alone cover the hets, in the second.
+/// A read pair is tagged the same however the input is cut into batches. In
+/// batches of seven records the left reads, which cover no het, come batches
+/// before their mates, and the reads further on let the first batches be
+/// written while later ones still wait.
 #[test]
-fn tags_do_not_depend_on_the_segments() -> Result<()> {
+fn tags_do_not_depend_on_the_batches() -> Result<()> {
     const START: usize = 900;
     let mate = START + 250;
     let scenario = Scenario::new(3000)
         .snv(mate + 20, Hap::One)
         .snv(mate + 70, Hap::Two)
         .balanced(START, mate, 6)
-        // Elsewhere, so each segment's depth is like the run's.
+        // Elsewhere, so each segment of `call` has a depth like the run's.
         .balanced(2000, 2300, 6)
         .snv(2020, Hap::One)
         .snv(2070, Hap::Two);
-    ensure!(START + READ_LEN <= 1000 && mate >= 1000, "the pair does not straddle the boundary");
     let called = Called::new(scenario)?;
 
-    let whole = called.tags("standard", &["--segment-max-length=100000"])?;
-    let cut = called.tags("standard", &["--segment-max-length=1000"])?;
-    assert_eq!(whole.untagged, BTreeSet::new());
-    assert_eq!(whole, cut);
+    for mode in ["standard", "legacy"] {
+        let whole = called.tags(mode, None)?;
+        assert_eq!(whole.untagged, BTreeSet::new(), "{mode}");
+        for batch in [1, 7, 24] {
+            assert_eq!(whole, called.tags(mode, Some(batch))?, "{mode}, batches of {batch}");
+        }
+    }
     Ok(())
 }
 
@@ -267,7 +274,7 @@ fn a_read_pair_over_no_phased_site_has_no_tag() -> Result<()> {
     let scenario = two_sites_under_the_left_read().pairs(Hap::One, Strand::Top, 600, 3);
     let called = Called::new(scenario)?;
 
-    let tags = called.tags("standard", &[])?;
+    let tags = called.tags("standard", None)?;
     let truth = called.scenario.read_haplotypes();
     assert_eq!(tags.untagged.len(), 3, "{:?}", tags.untagged);
     assert_eq!(tags.tagged.len(), truth.len() - 3);

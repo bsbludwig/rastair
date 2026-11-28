@@ -11,14 +11,14 @@
 
 use clio::ClioPath;
 use color_eyre::eyre::{Context as _, Result};
-use seqair::vcf::CoordinateIndex;
+use seqair::vcf::IndexKind;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 const PARTIAL_SUFFIX: &str = "partial";
 
 /// Indices that writers create next to their output, as `<output>.<suffix>`.
-const INDEX_SUFFIXES: [&str; 2] = [CoordinateIndex::SUFFIX, "tbi"];
+const INDEX_SUFFIXES: [&str; 2] = [IndexKind::Csi.suffix(), IndexKind::Tbi.suffix()];
 
 /// An output file written under a temporary name until [`Self::commit`].
 ///

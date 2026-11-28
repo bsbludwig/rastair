@@ -155,7 +155,7 @@ fn emit_compound_het_record<W: Write>(
     let mut alts: SmallVec<SmolStr, 2> = SmallVec::new();
     alts.push(alt_of(first));
     alts.push(alt_of(second));
-    let alleles = Alleles::complex(format!("{anchor}{}", render(deleted)).into(), alts);
+    let alleles = Alleles::complex(format!("{anchor}{}", render(deleted)), alts);
 
     let enc = writer.begin_record(
         contig,
@@ -312,7 +312,7 @@ fn emit_rejected_record<W: Write>(
 
     let enc = writer.begin_record(contig, pos1(pileup)?, &alleles, qual)?;
     let mut enc = match alt.verdict {
-        AltVerdict::Rejected(rejection) => filter_fail(enc, schema, rejection.filter()),
+        AltVerdict::Rejected(rejection) => filter_fail(enc, schema, rejection.filter())?,
         AltVerdict::Unscored | AltVerdict::Scored(_) | AltVerdict::Called(_) => enc.filter_pass(),
     };
     let alts = [alt];
@@ -346,7 +346,7 @@ fn emit_indel_record<W: Write>(
     let enc = if call.genotype.carries_an_alt() {
         enc.filter_pass()
     } else {
-        filter_fail(enc, schema, RastairFilter::LowIndelQual)
+        filter_fail(enc, schema, RastairFilter::LowIndelQual)?
     };
     encode_indel_fields(enc, schema, config, pileup, scored, &[call.event], (call.genotype, score))
 }
@@ -362,8 +362,8 @@ fn filter_fail<'a>(
     enc: seqair::vcf::RecordEncoder<'a, seqair::vcf::Begun>,
     schema: &Schema,
     filter: RastairFilter,
-) -> seqair::vcf::RecordEncoder<'a, seqair::vcf::Filtered> {
-    enc.filter_fail([schema.filter(filter)])
+) -> Result<seqair::vcf::RecordEncoder<'a, seqair::vcf::Filtered>> {
+    enc.filter_fail([schema.filter(filter)]).wrap_err("Failed to write the FILTER column")
 }
 
 /// Per-allele metric refs: reference allele first, then the given alts.
@@ -419,7 +419,7 @@ fn encode_info(
         i.as_sb_ob.encode(enc, &ob)?;
     }
     if c.sc5 {
-        i.sc5.encode(enc, pileup.context.as_vcf_str().as_str());
+        i.sc5.encode(enc, pileup.context.as_vcf_str().as_str())?;
     }
     if c.af {
         let v: SmallVec<f32, 2> = only_alts.iter().map(|m| m.allele_frequency.f() as f32).collect();
@@ -474,10 +474,10 @@ fn encode_info(
         i.m5mc_strands.encode(enc, &v)?;
     }
     if c.cpg && pileup.reference_cpg().is_some() {
-        i.cpg.encode(enc);
+        i.cpg.encode(enc)?;
     }
     if c.cpgnovo && pileup.in_denovo_cpg() {
-        i.cpgnovo.encode(enc);
+        i.cpgnovo.encode(enc)?;
     }
     Ok(())
 }

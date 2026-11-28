@@ -6,3 +6,4 @@ mod vcf_to_bed;
 
 pub use format::Rastair1BedFormat;
 pub use params::*;
+pub use vcf_to_bed::{VcfKeys, VcfRecord};

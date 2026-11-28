@@ -31,7 +31,7 @@ use seqair::vcf::record_encoder::{
 };
 use seqair::vcf::{
     ContigId, FilterId, FormatFloatOpts, FormatFloats, FormatGt, FormatInt, FormatInts, InfoFlag,
-    InfoFloat, InfoFloats, InfoInt, InfoInts, InfoString, Number, ValueType, VcfHeader,
+    InfoFloat, InfoFloats, InfoInt, InfoInts, InfoString, Number, VcfHeader,
 };
 use seqair_types::SmolStr;
 
@@ -41,174 +41,124 @@ use crate::vcf::{Contig, RastairFilter};
 // Field order here is the VCF header order; it is cosmetic (seqair resolves
 // keys by name), so it only needs to stay readable.
 
-const AD_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
+const AD_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::with_number(
     "AD",
     Number::ReferenceAlternateBases,
-    ValueType::Integer,
     "Total read depth for each allele",
 );
-const BQ_DEF: InfoFieldDef<Scalar<f32>> =
-    InfoFieldDef::new("BQ", Number::Count(1), ValueType::Float, "RMS base quality");
-const DP_DEF: InfoFieldDef<Scalar<i32>> =
-    InfoFieldDef::new("DP", Number::Count(1), ValueType::Integer, "Combined depth across samples");
-const MQ_DEF: InfoFieldDef<Scalar<f32>> =
-    InfoFieldDef::new("MQ", Number::Count(1), ValueType::Float, "RMS mapping quality");
-const MQ0_DEF: InfoFieldDef<Scalar<i32>> =
-    InfoFieldDef::new("MQ0", Number::Count(1), ValueType::Integer, "Number of MAPQ == 0 reads");
-const NS_DEF: InfoFieldDef<Scalar<i32>> =
-    InfoFieldDef::new("NS", Number::Count(1), ValueType::Integer, "Number of samples with data");
-const AS_SB_OT_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
-    "AS_SB_OT",
-    Number::ReferenceAlternateBases,
-    ValueType::Integer,
-    "OT counts per allele",
-);
-const AS_SB_OB_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
-    "AS_SB_OB",
-    Number::ReferenceAlternateBases,
-    ValueType::Integer,
-    "OB counts per allele",
-);
-const SC5_DEF: InfoFieldDef<Str> = InfoFieldDef::new(
+const BQ_DEF: InfoFieldDef<Scalar<f32>> = InfoFieldDef::new("BQ", "RMS base quality");
+const DP_DEF: InfoFieldDef<Scalar<i32>> = InfoFieldDef::new("DP", "Combined depth across samples");
+const MQ_DEF: InfoFieldDef<Scalar<f32>> = InfoFieldDef::new("MQ", "RMS mapping quality");
+const MQ0_DEF: InfoFieldDef<Scalar<i32>> = InfoFieldDef::new("MQ0", "Number of MAPQ == 0 reads");
+const NS_DEF: InfoFieldDef<Scalar<i32>> = InfoFieldDef::new("NS", "Number of samples with data");
+const AS_SB_OT_DEF: InfoFieldDef<Arr<i32>> =
+    InfoFieldDef::with_number("AS_SB_OT", Number::ReferenceAlternateBases, "OT counts per allele");
+const AS_SB_OB_DEF: InfoFieldDef<Arr<i32>> =
+    InfoFieldDef::with_number("AS_SB_OB", Number::ReferenceAlternateBases, "OB counts per allele");
+const SC5_DEF: InfoFieldDef<Str> = InfoFieldDef::with_number(
     "SC5",
     Number::Count(1),
-    ValueType::String,
     "5-base sequence context centered on the variant position",
 );
-const AF_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const AF_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "AF",
     Number::AlternateBases,
-    ValueType::Float,
     "Allele frequency for each ALT allele in the same order as listed (estimated from primary data, not called genotypes)",
 );
-const ABQ_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const ABQ_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "ABQ",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "RMS Base quality per allele",
 );
-const AMQ_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
-    "AMQ",
-    Number::ReferenceAlternateBases,
-    ValueType::Float,
-    "RMS Map quality per allele",
-);
-const AS_SS_BQ_OT_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const AMQ_DEF: InfoFieldDef<Arr<f32>> =
+    InfoFieldDef::with_number("AMQ", Number::ReferenceAlternateBases, "RMS Map quality per allele");
+const AS_SS_BQ_OT_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "AS_SS_BQ_OT",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "Strand-specific RMS of base quality per allele on the original top strand",
 );
-const AS_SS_BQ_OB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const AS_SS_BQ_OB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "AS_SS_BQ_OB",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "Strand-specific RMS of base quality per allele on the original bottom strand",
 );
-const AS_SS_MQ_OT_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const AS_SS_MQ_OT_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "AS_SS_MQ_OT",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "Strand-specific RMS of mapping quality per allele on the original top strand",
 );
-const AS_SS_MQ_OB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const AS_SS_MQ_OB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "AS_SS_MQ_OB",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "Strand-specific RMS of mapping quality per allele on the original bottom strand",
 );
-const PIR_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const PIR_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "PIR",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "RMS of relative position in read",
 );
 const ENT100_DEF: InfoFieldDef<Scalar<f32>> = InfoFieldDef::new(
     "ENT100",
-    Number::Count(1),
-    ValueType::Float,
     "Shannon entropy of 100bp sequence context around variant position. Value range (0..2)",
 );
-const NAB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
+const NAB_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::with_number(
     "NAB",
     Number::ReferenceAlternateBases,
-    ValueType::Float,
     "RMS of number of aligned bases",
 );
-const NOI_DEF: InfoFieldDef<Arr<f32>> = InfoFieldDef::new(
-    "NOI",
-    Number::ReferenceAlternateBases,
-    ValueType::Float,
-    "RMS of number of indels",
-);
-const M5MC_STRANDS_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::new(
+const NOI_DEF: InfoFieldDef<Arr<f32>> =
+    InfoFieldDef::with_number("NOI", Number::ReferenceAlternateBases, "RMS of number of indels");
+const M5MC_STRANDS_DEF: InfoFieldDef<Arr<i32>> = InfoFieldDef::with_number(
     "M5mC_Strands",
     Number::Count(4),
-    ValueType::Integer,
     "Number of reads that are evidence for unmodified, modified (the reads M5mC counts), no SNP, SNP. Always reported; 0,0,0,0 where neither CPG nor CPGnovo is set.",
 );
-const CPG_DEF: InfoFieldDef<seqair::vcf::Flag> =
-    InfoFieldDef::new("CPG", Number::Count(0), ValueType::Flag, "Is this a CpG site?");
+const CPG_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new("CPG", "Is this a CpG site?");
 const CPGNOVO_DEF: InfoFieldDef<seqair::vcf::Flag> = InfoFieldDef::new(
     "CPGnovo",
-    Number::Count(0),
-    ValueType::Flag,
     "De-novo CPG candidate: Could the alt alleles create a new CpG site?",
 );
 
 // ── FORMAT field definitions ────────────────────────────────────────────
 
-const GT_DEF: FormatFieldDef<seqair::vcf::Gt> =
-    FormatFieldDef::new("GT", Number::Count(1), ValueType::String, "Genotype");
+const GT_DEF: FormatFieldDef<seqair::vcf::Gt> = FormatFieldDef::new("GT", "Genotype");
 const PS_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
     "PS",
-    Number::Count(1),
-    ValueType::Integer,
     "Phase set identifier: the position of the first variant in the phase block, or of its next variant where another block's PS is that position",
 );
 const PQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
     "PQ",
-    Number::Count(1),
-    ValueType::Integer,
     "Phasing quality: Phred-scaled probability that the alleles are ordered incorrectly",
 );
 const GQ_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new(
     "GQ",
-    Number::Count(1),
-    ValueType::Integer,
     "Genotype quality: Phred-scaled chance the genotype is wrong, under a flat prior over the record's genotypes, capped at 99",
 );
-const PL_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+const PL_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::with_number(
     "PL",
     Number::Genotypes,
-    ValueType::Integer,
     "Phred-scaled genotype likelihoods, the likeliest genotype 0, capped at 255",
 );
-const SAMPLE_DP_DEF: FormatFieldDef<Scalar<i32>> =
-    FormatFieldDef::new("DP", Number::Count(1), ValueType::Integer, "Read depth");
+const SAMPLE_DP_DEF: FormatFieldDef<Scalar<i32>> = FormatFieldDef::new("DP", "Read depth");
 // `Number=.`, not 4.5's `Number=M`: see the module doc.
-const M5MC_DEF: FormatFieldDef<OptArr<f32>> = FormatFieldDef::new(
+const M5MC_DEF: FormatFieldDef<OptArr<f32>> = FormatFieldDef::with_number(
     "M5mC",
     Number::Unknown,
-    ValueType::Float,
     "Methylation level at CpG sites, one value per CpG context (the reference CpG first), missing where no read shows it",
 );
-const DPM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+const DPM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::with_number(
     "DPM5mC",
     Number::Unknown,
-    ValueType::Integer,
     "Total read depth for 5-methylcytosine detection, one value per CpG context",
 );
-const ADM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::new(
+const ADM5MC_DEF: FormatFieldDef<Arr<i32>> = FormatFieldDef::with_number(
     "ADM5mC",
     Number::Unknown,
-    ValueType::Integer,
     "Read depth supporting 5-methylcytosine modification, one value per CpG context",
 );
-const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::new(
+const ML_DEF: FormatFieldDef<Arr<f32>> = FormatFieldDef::with_number(
     "ML",
     Number::AlternateBases,
-    ValueType::Float,
     "Prediction of methylation/variant likelihood by rastair's machine learning model",
 );
 
@@ -409,10 +359,7 @@ pub fn register(
     let mut contig_ids = FxHashMap::default();
     for contig in contigs {
         let id = builder
-            .register_contig(
-                contig.name.clone(),
-                seqair::vcf::ContigDef { length: Some(contig.length) },
-            )
+            .register_contig(contig.name.clone(), seqair::vcf::ContigDef::new(Some(contig.length)))
             .wrap_err_with(|| format!("Failed to register contig {}", contig.name))?;
         contig_ids.insert(contig.name.clone(), id);
     }
@@ -714,14 +661,14 @@ mod tests {
     fn the_header_declares_the_version_that_defines_its_fields() {
         let (header, _schema) = register(&[], &[SmolStr::from("sample")], &[])
             .expect("the schema registers without contigs");
-        assert_eq!(header.file_format(), "VCFv4.5");
+        assert_eq!(header.version(), seqair::vcf::header::VcfVersion::V4_5);
     }
 
     /// The methylation fields stay at `Number=.`, not the `Number=M` that VCF
     /// 4.5 pairs them with (see the module doc).
     #[test]
     fn methylation_fields_avoid_the_cardinality_noodles_rejects() {
-        for def in [M5MC_DEF.number, DPM5MC_DEF.number, ADM5MC_DEF.number] {
+        for def in [M5MC_DEF.number(), DPM5MC_DEF.number(), ADM5MC_DEF.number()] {
             assert_eq!(def, Number::Unknown, "must stay `.` until noodles accepts `M`");
         }
     }

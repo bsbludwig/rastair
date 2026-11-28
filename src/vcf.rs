@@ -36,3 +36,11 @@ pub struct Contig {
     /// Length of the contig.
     pub length: u64,
 }
+
+/// Whether a record that was read passed its filters. A `FILTER` of `.`
+/// counts: some truth sets never write `PASS` (GIAB v5.0q), and it is how
+/// htslib's `bcf_has_filter(…, "PASS")` reads one.
+pub(crate) fn passed_filters(site: &seqair::vcf::Site) -> bool {
+    use seqair::vcf::FilterStatus;
+    matches!(site.filters().status(), FilterStatus::Pass | FilterStatus::Missing)
+}

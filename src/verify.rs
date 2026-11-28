@@ -3,18 +3,17 @@
 use crate::utils::cli;
 use clio::ClioPath;
 use color_eyre::eyre::{Result, WrapErr, ensure, eyre};
-use rust_htslib::bcf::{self, Read as _, header::HeaderView};
 use rustc_hash::{FxHashMap, FxHashSet};
-use seqair_types::{RegionString, SmolStr};
-use std::{
-    path::{Path, PathBuf},
-    thread::available_parallelism,
+use seqair::vcf::{
+    Fields, FormatFloatOpts, Info, InfoFlag, Locus, Samples, Site, VcfFile, VcfReadError,
 };
+use seqair_types::{RegionString, SmolStr};
+use std::{path::Path, thread::available_parallelism};
 use tabled::{
     builder::Builder,
     settings::{Alignment, Modify, Style, object::Columns},
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument, warn};
 
 // ─── CLI params ────────────────────────────────────────────────────────────
 
@@ -320,8 +319,37 @@ pub fn verify(params: &VerifyParams) -> Result<()> {
 
 // ─── VCF loading ───────────────────────────────────────────────────────────
 
+/// Open the VCF or BCF at `path`.
+pub(crate) fn open_vcf(path: &Path) -> Result<VcfFile> {
+    ensure!(path.exists(), "VCF file `{}` not found", path.display());
+    VcfFile::open(path).wrap_err_with(|| format!("Failed to open VCF: {}", path.display()))
+}
+
+/// The INFO flags that say what a rastair record is; a truth set has neither.
+struct CpgFlags {
+    cpg: Option<InfoFlag>,
+    cpg_novo: Option<InfoFlag>,
+}
+
+impl CpgFlags {
+    fn of(file: &VcfFile) -> Result<Self> {
+        Ok(Self { cpg: file.info_key_opt("CPG")?, cpg_novo: file.info_key_opt("CPGnovo")? })
+    }
+
+    /// Whether the record is at a reference CpG, and at a de-novo one.
+    fn read(&self, info: &Info) -> Result<(bool, bool)> {
+        let flag = |key: &Option<InfoFlag>| -> Result<bool> {
+            Ok(match key {
+                Some(key) => info.get(key)?,
+                None => false,
+            })
+        };
+        Ok((flag(&self.cpg)?, flag(&self.cpg_novo)?))
+    }
+}
+
 /// Load PASS variants from a VCF, returning position key → category.
-/// With regions: uses `IndexedReader` (requires `.csi` index).
+/// With regions: reads through the index (`.csi` or `.tbi`).
 /// Without regions: streams sequentially (no index required).
 #[instrument(level = "info", skip_all)]
 fn load_variants(
@@ -329,123 +357,102 @@ fn load_variants(
     regions: &[RegionString],
     threads: usize,
 ) -> Result<FxHashMap<FullPositionKey, VariantCategory>> {
-    ensure!(path.exists(), "VCF file `{}` not found", path.display());
-
+    let file = open_vcf(path)?;
+    let flags = CpgFlags::of(&file)?;
     let mut result = FxHashMap::default();
-
-    if regions.is_empty() {
-        let mut reader = bcf::Reader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        let header = reader.header().clone();
-        for rec in reader.records() {
-            match rec {
-                Ok(r) => extract_variants(&r, &header, &mut result),
-                Err(e) => warn!(error = %e, "Failed to read VCF record"),
-            }
-        }
-    } else {
-        for_each_record_in_regions(path, regions, threads, |r, header| {
-            extract_variants(r, header, &mut result);
-        })?;
-    }
-
+    for_each_record(&file, regions, threads, |(locus, site, info): &(Locus, Site, Info)| {
+        extract_variants(&flags, locus, site, info, &mut result)
+    })?;
     Ok(result)
 }
 
-/// htslib's `fetch` takes 0-based inclusive bounds; a region string is 1-based inclusive.
-fn fetch_bounds(region: &RegionString) -> (u64, Option<u64>) {
-    (
-        region.start.map_or(0, |start| start.to_zero_based().as_u64()),
-        region.end.map(|end| end.to_zero_based().as_u64()),
-    )
+/// Visit every record of `file`, or with `regions` every record inside them,
+/// which takes the file's index.
+fn for_each_record<F: Fields>(
+    file: &VcfFile,
+    regions: &[RegionString],
+    threads: usize,
+    mut visit: impl FnMut(&F) -> Result<()>,
+) -> Result<()> {
+    if !regions.is_empty() {
+        return for_each_record_in_regions(file, regions, threads, visit);
+    }
+    let mut reader = file
+        .reader::<F>()
+        .threads(reader_threads(threads))
+        .open()
+        .wrap_err("Failed to read the VCF")?;
+    while let Some(record) = reader.next_record().wrap_err("Failed to read VCF record")? {
+        visit(record)?;
+    }
+    Ok(())
 }
 
-/// Visit every record of the indexed VCF at `path` inside `regions`, in order.
+fn reader_threads(threads: usize) -> std::num::NonZeroUsize {
+    std::num::NonZeroUsize::new(threads.max(2)).unwrap_or(std::num::NonZeroUsize::MIN)
+}
+
+/// Visit every record of the indexed VCF `file` inside `regions`, in order.
 ///
 /// A region on a chromosome the file does not declare is skipped with a
 /// warning rather than an error: a truth set such as GIAB HG001 has no chrX
 /// or chrY, and a whole-genome comparison must not fail on that account. A
 /// declared chromosome without records is simply empty.
-pub(crate) fn for_each_record_in_regions(
-    path: &Path,
+pub(crate) fn for_each_record_in_regions<F: Fields>(
+    file: &VcfFile,
     regions: &[RegionString],
     threads: usize,
-    mut visit: impl FnMut(&bcf::Record, &HeaderView),
+    mut visit: impl FnMut(&F) -> Result<()>,
 ) -> Result<()> {
-    ensure_index_exists(path)?;
-    let mut reader = bcf::IndexedReader::from_path(path)
-        .wrap_err_with(|| format!("Failed to open indexed VCF: {}", path.display()))?;
-    reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-    let header = reader.header().clone();
+    ensure!(
+        file.has_index(),
+        "VCF index not found. Create one with `bcftools index` on the VCF file"
+    );
     for region in regions {
-        let Ok(rid) = header.name2rid(region.chromosome.as_bytes()) else {
-            warn!(
-                chromosome = %region.chromosome,
-                path = %path.display(),
-                "Chromosome not in VCF, skipping region"
-            );
-            continue;
-        };
-        let (start, end) = fetch_bounds(region);
-        match reader.fetch(rid, start, end) {
-            Ok(()) => {}
-            // The index lists only contigs that hold records, so a declared
-            // contig without any cannot be sought.
-            Err(bcf::BcfError::GenomicSeek { .. }) => {
-                debug!(chromosome = %region.chromosome, "No records on this chromosome");
+        let mut reader = match file.reader::<F>().threads(reader_threads(threads)).query(region) {
+            Ok(reader) => reader,
+            Err(VcfReadError::UnknownContig { .. }) => {
+                warn!(chromosome = %region.chromosome, "Chromosome not in VCF, skipping region");
                 continue;
             }
             Err(error) => {
                 return Err(error).wrap_err_with(|| format!("Failed to fetch region {region}"));
             }
-        }
-        for rec in reader.records() {
-            match rec {
-                Ok(r) => visit(&r, &header),
-                Err(e) => warn!(error = %e, "Failed to read VCF record"),
-            }
+        };
+        while let Some(record) = reader.next_record().wrap_err("Failed to read VCF record")? {
+            visit(record)?;
         }
     }
     Ok(())
 }
 
+/// Whether an allele is spelled in `A`, `C`, `G` and `T` alone: not an
+/// `N`-masked reference, nor a symbolic allele like `<*>`.
+fn spelled_in_bases(allele: &[u8]) -> bool {
+    !allele.is_empty() && allele.iter().all(|base| matches!(base, b'A' | b'C' | b'G' | b'T'))
+}
+
 fn extract_variants(
-    record: &bcf::Record,
-    header: &HeaderView,
+    flags: &CpgFlags,
+    locus: &Locus,
+    site: &Site,
+    info: &Info,
     result: &mut FxHashMap<FullPositionKey, VariantCategory>,
-) {
-    if !record.has_filter("PASS".as_bytes()) {
-        return;
+) -> Result<()> {
+    if !crate::vcf::passed_filters(site) {
+        return Ok(());
     }
 
-    let alleles = record.alleles();
-    let ref_allele = match alleles.first() {
-        Some(a) if !a.is_empty() => a,
-        _ => return,
-    };
-
-    // Skip records where REF contains non-ACGT bases (e.g. N-masked regions).
-    if ref_allele
-        .iter()
-        .any(|&b| !b.is_ascii_alphabetic() || !matches!(b, b'A' | b'C' | b'G' | b'T'))
-    {
-        return;
+    let alleles = site.alleles();
+    let ref_allele = alleles.reference();
+    if !spelled_in_bases(ref_allele) {
+        return Ok(());
     }
+    let Ok(ref_str) = std::str::from_utf8(ref_allele).map(SmolStr::from) else { return Ok(()) };
 
-    let ref_str = match std::str::from_utf8(ref_allele) {
-        Ok(s) => SmolStr::from(s),
-        Err(_) => return,
-    };
-
-    let chrom = match record.rid().and_then(|rid| header.rid2name(rid).ok()) {
-        Some(name) => SmolStr::from(std::str::from_utf8(name).unwrap_or("unknown")),
-        None => return,
-    };
-
-    let pos = record.pos() as u64;
-    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
-    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
+    let chrom = locus.contig().name().clone();
+    let Some(pos) = locus.start().pos0().map(|pos| pos.as_u64()) else { return Ok(()) };
+    let (is_cpg, is_denovo) = flags.read(info)?;
 
     let snv_category = if is_denovo {
         VariantCategory::DeNovo
@@ -455,21 +462,12 @@ fn extract_variants(
         VariantCategory::Other
     };
 
-    for alt_allele in alleles.iter().skip(1) {
-        if alt_allele.is_empty() {
+    for alt_allele in alleles.alts() {
+        let alt_allele = alt_allele.as_bytes();
+        if !spelled_in_bases(alt_allele) {
             continue;
         }
-        // Skip alt alleles with non-ACGT bases (e.g. symbolic like <*>).
-        if alt_allele
-            .iter()
-            .any(|&b| !b.is_ascii_alphabetic() || !matches!(b, b'A' | b'C' | b'G' | b'T'))
-        {
-            continue;
-        }
-        let alt_str = match std::str::from_utf8(alt_allele) {
-            Ok(s) => SmolStr::from(s),
-            Err(_) => continue,
-        };
+        let Ok(alt_str) = std::str::from_utf8(alt_allele).map(SmolStr::from) else { continue };
 
         // Classify by allele lengths (VCF anchor-base convention: first base is shared).
         let category = if ref_allele.len() == 1 && alt_allele.len() == 1 {
@@ -496,73 +494,48 @@ fn extract_variants(
             category,
         );
     }
+    Ok(())
 }
 
 /// Load `M5mC` beta values from a VCF.
 #[instrument(level = "info", skip_all)]
 fn load_betas(path: &Path, regions: &[RegionString], threads: usize) -> Result<Vec<BetaRecord>> {
-    ensure!(path.exists(), "VCF file `{}` not found", path.display());
-
+    let file = open_vcf(path)?;
+    let flags = CpgFlags::of(&file)?;
+    // Without the field, no record has a β.
+    let Some(beta): Option<FormatFloatOpts> = file.format_key_opt("M5mC")? else {
+        return Ok(Vec::new());
+    };
     let mut result = Vec::new();
-
-    if regions.is_empty() {
-        let mut reader = bcf::Reader::from_path(path)
-            .wrap_err_with(|| format!("Failed to open VCF: {}", path.display()))?;
-        reader.set_threads(threads.max(2)).wrap_err("Failed to set reader threads")?;
-        let header = reader.header().clone();
-        for rec in reader.records() {
-            match rec {
-                Ok(r) => extract_beta(&r, &header, &mut result),
-                Err(e) => warn!(error = %e, "Failed to read VCF record"),
-            }
-        }
-    } else {
-        for_each_record_in_regions(path, regions, threads, |r, header| {
-            extract_beta(r, header, &mut result);
-        })?;
-    }
-
-    Ok(result)
-}
-
-fn extract_beta(record: &bcf::Record, header: &HeaderView, result: &mut Vec<BetaRecord>) {
-    let beta = match record.format(b"M5mC").float() {
-        // The first CpG with evidence, as `convert` takes it.
-        Ok(v) => match v.first().and_then(|s| s.iter().copied().find(|b| !b.is_nan())) {
-            Some(b) => f64::from(b),
-            None => return,
+    for_each_record(
+        &file,
+        regions,
+        threads,
+        |(locus, site, info, samples): &(Locus, Site, Info, Samples)| {
+            // The first sample's first CpG with evidence, as `convert` takes it.
+            let Some(beta) = samples
+                .column(&beta)?
+                .and_then(|mut column| column.next())
+                .flatten()
+                .and_then(|betas| betas.flatten().next())
+            else {
+                return Ok(());
+            };
+            let Some(pos) = locus.start().pos0().map(|pos| pos.as_u64()) else { return Ok(()) };
+            let (is_cpg, is_denovo) = flags.read(info)?;
+            let has_variant = crate::vcf::passed_filters(site)
+                && site.alleles().alts().any(|alt| !matches!(alt, seqair::vcf::Allele::Missing));
+            result.push(BetaRecord {
+                key: MethylationKey { chrom: locus.contig().name().clone(), pos },
+                beta: f64::from(beta),
+                is_cpg,
+                is_denovo,
+                has_variant,
+            });
+            Ok(())
         },
-        Err(_) => return,
-    };
-
-    let chrom = match record.rid().and_then(|rid| header.rid2name(rid).ok()) {
-        Some(name) => SmolStr::from(std::str::from_utf8(name).unwrap_or("unknown")),
-        None => return,
-    };
-
-    let pos = record.pos() as u64;
-    let is_cpg = record.info(b"CPG").flag().unwrap_or(false);
-    let is_denovo = record.info(b"CPGnovo").flag().unwrap_or(false);
-    let has_variant =
-        record.has_filter("PASS".as_bytes()) && record.alleles().iter().skip(1).any(|a| *a != b".");
-    result.push(BetaRecord {
-        key: MethylationKey { chrom, pos },
-        beta,
-        is_cpg,
-        is_denovo,
-        has_variant,
-    });
-}
-
-fn ensure_index_exists(path: &Path) -> Result<()> {
-    let csi = PathBuf::from(format!("{}.csi", path.display()));
-    ensure!(
-        csi.exists(),
-        "VCF index not found: `{}`. Create with `bcftools index {}`",
-        csi.display(),
-        path.display()
-    );
-    Ok(())
+    )?;
+    Ok(result)
 }
 
 // ─── Comparison logic ──────────────────────────────────────────────────────
@@ -1097,31 +1070,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_region_is_fetched_from_its_first_to_its_last_base() -> Result<()> {
-        assert_eq!(fetch_bounds(&"chr1:100-200".parse()?), (99, Some(199)));
-        assert_eq!(fetch_bounds(&"chr1".parse()?), (0, None));
-        Ok(())
-    }
-
-    #[test]
     fn a_declared_chromosome_without_records_is_empty() -> Result<()> {
-        use std::io::Write as _;
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("truth.vcf.gz");
-        let mut vcf = rust_htslib::bgzf::Writer::from_path(&path)?;
-        vcf.write_all(
-            b"##fileformat=VCFv4.2\n##contig=<ID=chr1,length=1000>\n\
-              ##contig=<ID=chr2,length=1000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
-              chr1\t100\t.\tA\tG\t.\tPASS\t.\n",
-        )?;
-        drop(vcf);
-        bcf::index::build(&path, None, 1, bcf::index::Type::Csi(14))?;
+        let vcf = "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=1000>\n\
+                   ##contig=<ID=chr2,length=1000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                   chr1\t100\t.\tA\tG\t.\tPASS\t.\n";
+        let file = VcfFile::from_bytes_indexed(vcf.as_bytes().to_vec())?;
 
         let mut visited = Vec::new();
-        for_each_record_in_regions(&path, &["chr2".parse()?, "chr1".parse()?], 1, |record, _| {
-            visited.push(record.pos());
+        let regions = ["chr2".parse()?, "chr1".parse()?, "chr3".parse()?];
+        for_each_record_in_regions(&file, &regions, 1, |locus: &Locus| {
+            visited.push(locus.start().pos0().map(|pos| pos.as_u32()));
+            Ok(())
         })?;
-        assert_eq!(visited, [99]);
+        assert_eq!(visited, [Some(99)]);
         Ok(())
     }
 

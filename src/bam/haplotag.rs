@@ -24,27 +24,44 @@
 //! **Fragments.** Votes are pooled over the alignments sharing a read name
 //! whose starts lie within [`MATE_REACH`] of the read being tagged, so mates
 //! get one tag and a read over no site takes its mate's. The reach is measured
-//! between two alignments, not from a segment's edge, which is what makes a
-//! tag independent of how the run is cut into segments; `rewrite_region`
-//! fetches that much beyond its segment for it. The phase set with the widest
-//! margin between its two haplotypes wins (the lowest `PS` on a tie); a read
-//! pair whose votes cancel gets no tag, and any `HP`/`PS` it came with is
-//! removed.
+//! between two alignments, not from a batch's edge, so a tag does not depend
+//! on how the input is cut into batches. The phase set with the widest margin
+//! between its two haplotypes wins (the lowest `PS` on a tie); a read pair
+//! whose votes cancel gets no tag, and any `HP`/`PS` it came with is removed.
+//!
+//! **Two stages.** A worker gathers its batch's votes ([`BatchVotes`]) before
+//! it rewrites the records, since `standard` mode rewrites the bases the votes
+//! read. The mate may be in another batch, so the tags are set where the
+//! batches come back in order: the [`Tagger`] holds a batch until the input
+//! has moved more than [`MATE_REACH`] past it, then tags and hands it on. That
+//! reads the input's order as coordinate order. On input in another order,
+//! and past [`MAX_POOLED_RECORDS`] reads within the reach of one another
+//! (about 7,500x of 150-base reads), mates pool only if they are in one batch
+//! or in batches held together.
+//! With `--region`, a mate outside the regions is not read and casts no vote.
 
-use super::base_modification::{remove_aux_if_present, replace_aux};
+use super::aligned_bases;
 use color_eyre::eyre::{Context as _, ContextCompat as _, Result};
-use rust_htslib::{
-    bam::{Record, ext::BamRecordExtensions as _, record::Aux},
-    bcf::{self, record::GenotypeAllele},
-};
 use rustc_hash::FxHashMap;
-use seqair_types::{Base, SmallVec, Strand, StrandFromRecord};
-use std::collections::BTreeMap;
+use seqair::{
+    bam::{RawBamRecord, aligned_pairs::MatchPosition},
+    reader::Tid,
+};
+use seqair_types::{Base, SmallVec, Strand};
+use std::collections::{BTreeMap, VecDeque};
 
 /// How far apart two alignments of one read name may start and still vote
 /// together. Covers the insert of a short-read library; a mate further away
 /// is tagged on its own.
 pub(super) const MATE_REACH: u64 = 1000;
+
+/// How many records the [`Tagger`] holds back, and how many written ones it
+/// remembers the votes of, before it stops waiting for the input to move on.
+const MAX_POOLED_RECORDS: usize = 50_000;
+
+/// What a vote weighs in a read stored without base qualities, where every
+/// base counts alike.
+const NO_QUALITY_WEIGHT: u8 = 1;
 
 /// Reference bases after an indel record's `REF` that its haplotypes are
 /// compared over: enough to leave the short repeats most indels sit in.
@@ -95,33 +112,26 @@ pub(super) struct PhasedSite {
 }
 
 impl PhasedSite {
-    /// The phased site a VCF record is, if its first sample is a phased
-    /// heterozygote with a `PS` and alleles spelled in bases.
+    /// The site of a phased heterozygous record at the 0-based `pos` whose
+    /// haplotypes carry `first` and `second`, if both are spelled in bases.
     ///
     /// `reference_after` is asked for the bases from a 0-based position on,
     /// [`INDEL_FLANK`] of them or as many as the contig has.
-    pub(super) fn from_record(
-        record: &bcf::Record,
+    pub(super) fn new(
+        pos: u32,
+        set: i32,
+        reference: &[u8],
+        [first, second]: [&[u8]; 2],
         reference_after: impl FnOnce(u64) -> Result<Vec<u8>>,
     ) -> Result<Option<Self>> {
-        let Some([first, second]) = phased_alleles(record) else { return Ok(None) };
-        let Some(set) = phase_set(record) else { return Ok(None) };
-
-        let alleles = record.alleles();
-        let (Some(reference), Some(first), Some(second)) =
-            (alleles.first(), alleles.get(first), alleles.get(second))
-        else {
-            return Ok(None);
-        };
         let spelled = |allele: &[u8]| {
             !allele.is_empty() && allele.iter().all(|base| b"ACGTacgt".contains(base))
         };
         if !(spelled(first) && spelled(second)) {
             return Ok(None);
         }
-        let pos = u32::try_from(record.pos()).wrap_err("VCF position does not fit in u32")?;
 
-        let alleles = match (*reference, *first, *second) {
+        let alleles = match (reference, first, second) {
             ([_], &[first], &[second]) => SiteAlleles::Snv([Base::from(first), Base::from(second)]),
             // Past the anchor the alleles are compared as sequence, which
             // needs them to start on the same base.
@@ -141,30 +151,6 @@ impl PhasedSite {
         };
         Ok(Some(Self { pos, set, alleles }))
     }
-}
-
-/// The allele indices of a phased heterozygous diploid `GT`, in `GT` order.
-fn phased_alleles(record: &bcf::Record) -> Option<[usize; 2]> {
-    let genotypes = record.genotypes().ok()?;
-    let genotype = genotypes.get(0);
-    // Up to VCF 4.3 the first allele carries no phase bit, so the second
-    // allele's is the one that says `|`.
-    let [
-        GenotypeAllele::Phased(first) | GenotypeAllele::Unphased(first),
-        GenotypeAllele::Phased(second),
-    ] = genotype[..]
-    else {
-        return None;
-    };
-    (first != second).then_some([usize::try_from(first).ok()?, usize::try_from(second).ok()?])
-}
-
-/// The first sample's `PS`, where it has one.
-fn phase_set(record: &bcf::Record) -> Option<i32> {
-    use bcf::record::Numeric as _;
-    let sets = record.format(b"PS").integer().ok()?;
-    let set = *sets.first()?.first()?;
-    (!set.is_missing()).then_some(set)
 }
 
 /// A read's say at one phased site.
@@ -267,30 +253,31 @@ pub(super) fn indel_vote(
 
 /// A read's votes at the phased sites it covers. `sites` are sorted by
 /// position.
-pub(super) fn votes_of(record: &Record, sites: &[PhasedSite]) -> Result<Votes> {
+pub(super) fn votes_of(record: &RawBamRecord, sites: &[PhasedSite]) -> Votes {
     let mut votes = Votes::new();
-    let start = record.pos();
-    let end = record.reference_end();
-    let first = sites.partition_point(|site| i64::from(site.pos) < start);
+    let (Some(start), Some(last)) = (record.pos(), record.end_pos()) else { return votes };
+    let flags = record.flags();
+    let first = sites.partition_point(|site| site.pos < start.as_u32());
     let covered = sites.get(first..).unwrap_or_default();
     let covered = covered
-        .get(..covered.partition_point(|site| i64::from(site.pos) < end))
+        .get(..covered.partition_point(|site| site.pos <= last.as_u32()))
         .unwrap_or_default();
-    if covered.is_empty() || record.is_unmapped() {
-        return Ok(votes);
+    if covered.is_empty() || flags.is_unmapped() {
+        return votes;
     }
 
-    let strand = StrandFromRecord::strand(record);
-    let seq = record.seq().as_bytes();
+    let strand = Strand::from_flags(flags);
+    let mut seq = Vec::with_capacity(record.seq_len());
+    record.decode_seq_into(&mut seq);
     let qual = record.qual();
     let base_at = |index: Option<usize>| index.and_then(|index| seq.get(index)).map(Base::from);
 
     let mut pending = covered.iter().peekable();
-    for [read_pos, ref_pos] in record.aligned_pairs() {
+    for MatchPosition { qpos, rpos, .. } in aligned_bases(record) {
+        let (index, ref_pos) = (qpos.as_usize(), rpos.as_u32());
         // A site the read deletes or skips has no base to vote with.
-        while pending.next_if(|site| i64::from(site.pos) < ref_pos).is_some() {}
-        let index = usize::try_from(read_pos).wrap_err("read position does not fit in usize")?;
-        while let Some(site) = pending.next_if(|site| i64::from(site.pos) == ref_pos) {
+        while pending.next_if(|site| site.pos < ref_pos).is_some() {}
+        while let Some(site) = pending.next_if(|site| site.pos == ref_pos) {
             let vote = match &site.alleles {
                 SiteAlleles::Snv(alleles) => base_at(Some(index))
                     .and_then(|observed| {
@@ -305,9 +292,12 @@ pub(super) fn votes_of(record: &Record, sites: &[PhasedSite]) -> Result<Votes> {
                         .map(|(haplotype, decisive)| (haplotype, after.saturating_add(decisive)))
                 }
             };
-            if let Some((haplotype, decisive)) = vote
-                && let Some(&weight) = qual.get(decisive)
-            {
+            let Some((haplotype, decisive)) = vote else { continue };
+            let weight = match qual {
+                Some(qual) => qual.get(decisive).and_then(|quality| quality.get()),
+                None => Some(NO_QUALITY_WEIGHT),
+            };
+            if let Some(weight) = weight {
                 votes.push(Vote { set: site.set, haplotype, weight });
             }
         }
@@ -315,7 +305,7 @@ pub(super) fn votes_of(record: &Record, sites: &[PhasedSite]) -> Result<Votes> {
             break;
         }
     }
-    Ok(votes)
+    votes
 }
 
 /// The haplotype of a phase set a read pair is tagged with.
@@ -345,59 +335,241 @@ pub(super) fn assign(votes: impl IntoIterator<Item = Vote>) -> Option<HaplotypeT
     best.map(|(_, tag)| tag)
 }
 
-/// The votes of one alignment, and where it starts.
+/// Where an alignment starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Place {
+    tid: Tid,
+    pos: u64,
+}
+
+impl Place {
+    fn of(record: &RawBamRecord) -> Option<Self> {
+        Some(Self { tid: record.tid()?, pos: record.pos()?.as_u64() })
+    }
+
+    /// Whether alignments starting here and at `other` vote together.
+    fn reaches(self, other: Self) -> bool {
+        self.tid == other.tid && self.pos.abs_diff(other.pos) <= MATE_REACH
+    }
+
+    /// Whether a coordinate-sorted input that has come to `later` can still
+    /// hold an alignment voting with one starting here.
+    fn in_reach_of(self, later: Self) -> bool {
+        self.tid == later.tid && later.pos <= self.pos.saturating_add(MATE_REACH)
+    }
+}
+
+/// The votes of one alignment.
 #[derive(Debug)]
 struct AlignmentVotes {
-    pos: i64,
+    /// The batch it came in, by [`Tagger`]'s count.
+    batch: u64,
+    place: Place,
     votes: Votes,
 }
 
-/// The votes of every alignment fetched for a segment, by read name.
+/// The votes of a batch's records, by read name, gathered before the records
+/// are rewritten.
 #[derive(Debug, Default)]
-pub(super) struct Fragments {
-    by_name: FxHashMap<Vec<u8>, SmallVec<AlignmentVotes, 2>>,
+pub(super) struct BatchVotes {
+    alignments: Vec<(Box<[u8]>, Place, Votes)>,
 }
 
-impl Fragments {
+impl BatchVotes {
     /// Record the votes `record` casts at `sites` (sorted by position).
-    pub(super) fn add(&mut self, record: &Record, sites: &[PhasedSite]) -> Result<()> {
-        let votes = votes_of(record, sites)?;
-        if !votes.is_empty() {
-            self.by_name
-                .entry(record.qname().to_vec())
-                .or_default()
-                .push(AlignmentVotes { pos: record.pos(), votes });
+    pub(super) fn add(&mut self, record: &RawBamRecord, sites: &[PhasedSite]) {
+        let votes = votes_of(record, sites);
+        if let (false, Some(place)) = (votes.is_empty(), Place::of(record)) {
+            self.alignments.push((record.qname().into(), place, votes));
         }
-        Ok(())
+    }
+}
+
+/// A batch the [`Tagger`] has seen.
+#[derive(Debug)]
+struct Seen<T> {
+    number: u64,
+    /// Until it is tagged and handed on.
+    held: Option<(Vec<RawBamRecord>, T)>,
+    records: usize,
+    /// The read names it has votes under.
+    names: Vec<Box<[u8]>>,
+    /// Where its first and last placed records start.
+    ends: Option<(Place, Place)>,
+}
+
+/// Tags batches arriving in input order, each once the batches after it have
+/// brought the votes its reads' mates cast. `T` rides along with a batch.
+#[derive(Debug)]
+pub(super) struct Tagger<T> {
+    /// By read name, the votes of the alignments of `window`.
+    votes: FxHashMap<Box<[u8]>, SmallVec<AlignmentVotes, 2>>,
+    /// In input order: batches whose votes are no longer needed leave at the
+    /// front, and the held ones are at the back.
+    window: VecDeque<Seen<T>>,
+    batches: u64,
+}
+
+impl<T> Default for Tagger<T> {
+    fn default() -> Self {
+        Self { votes: FxHashMap::default(), window: VecDeque::new(), batches: 0 }
+    }
+}
+
+impl<T> Tagger<T> {
+    /// Take the next batch and return the batches that are now tagged, in
+    /// input order.
+    pub(super) fn push(
+        &mut self,
+        records: Vec<RawBamRecord>,
+        votes: BatchVotes,
+        with: T,
+    ) -> Result<Vec<(Vec<RawBamRecord>, T)>> {
+        self.batches += 1;
+        let number = self.batches;
+        let mut places = records.iter().filter_map(Place::of);
+        let first = places.next();
+        let ends = first.map(|first| (first, places.next_back().unwrap_or(first)));
+        let mut names = Vec::with_capacity(votes.alignments.len());
+        for (name, place, votes) in votes.alignments {
+            self.votes.entry(name.clone()).or_default().push(AlignmentVotes {
+                batch: number,
+                place,
+                votes,
+            });
+            names.push(name);
+        }
+        self.window.push_back(Seen {
+            number,
+            records: records.len(),
+            held: Some((records, with)),
+            names,
+            ends,
+        });
+
+        let mut tagged = Vec::new();
+        let mut held: usize =
+            self.window.iter().filter(|seen| seen.held.is_some()).map(|seen| seen.records).sum();
+        for index in 0..self.window.len() {
+            let Some(seen) = self.window.get(index) else { break };
+            if seen.held.is_none() {
+                continue;
+            }
+            // The input has moved on when this batch's first record is out of
+            // reach of that one's last.
+            let waits = seen.ends.zip(first).is_some_and(|((_, last), now)| last.in_reach_of(now));
+            if (waits || seen.number == number) && held <= MAX_POOLED_RECORDS {
+                break;
+            }
+            held = held.saturating_sub(seen.records);
+            tagged.extend(self.release(index)?);
+        }
+        self.forget();
+        Ok(tagged)
+    }
+
+    /// The batches still held, tagged, once the input has ended.
+    pub(super) fn finish(&mut self) -> Result<Vec<(Vec<RawBamRecord>, T)>> {
+        let mut tagged = Vec::new();
+        for index in 0..self.window.len() {
+            tagged.extend(self.release(index)?);
+        }
+        self.window.clear();
+        self.votes.clear();
+        Ok(tagged)
+    }
+
+    /// Tag the batch at `index` of the window, if it is still held.
+    fn release(&mut self, index: usize) -> Result<Option<(Vec<RawBamRecord>, T)>> {
+        let Some((mut records, with)) =
+            self.window.get_mut(index).and_then(|seen| seen.held.take())
+        else {
+            return Ok(None);
+        };
+        for record in &mut records {
+            let tag = self.tag_of(record);
+            write_tag(record, tag).wrap_err_with(|| {
+                format!(
+                    "failed to tag the haplotype of record {}",
+                    String::from_utf8_lossy(record.qname())
+                )
+            })?;
+        }
+        Ok(Some((records, with)))
+    }
+
+    /// Drop the votes of batches at the front that are handed on and out of
+    /// reach of everything still held or still to come.
+    fn forget(&mut self) {
+        let next = self
+            .window
+            .iter()
+            .find(|seen| seen.held.is_some())
+            .and_then(|seen| seen.ends)
+            .map(|(first, _)| first)
+            .or_else(|| self.window.back().and_then(|seen| seen.ends).map(|(_, last)| last));
+        let mut remembered: usize =
+            self.window.iter().filter(|seen| seen.held.is_none()).map(|seen| seen.records).sum();
+        while let Some(front) = self.window.front() {
+            let needed =
+                front.ends.zip(next).is_some_and(|((_, last), next)| last.in_reach_of(next));
+            if front.held.is_some() || (needed && remembered <= MAX_POOLED_RECORDS) {
+                break;
+            }
+            remembered = remembered.saturating_sub(front.records);
+            let Some(front) = self.window.pop_front() else { break };
+            for name in front.names {
+                if let Some(alignments) = self.votes.get_mut(&name) {
+                    alignments.retain(|alignment| alignment.batch != front.number);
+                    if alignments.is_empty() {
+                        self.votes.remove(&name);
+                    }
+                }
+            }
+        }
     }
 
     /// The tag of `record`'s fragment: its own votes and those of the
     /// alignments of its read name starting within [`MATE_REACH`] of it.
-    pub(super) fn tag_of(&self, record: &Record) -> Option<HaplotypeTag> {
-        let pos = record.pos();
-        let alignments = self.by_name.get(record.qname())?;
+    fn tag_of(&self, record: &RawBamRecord) -> Option<HaplotypeTag> {
+        let place = Place::of(record)?;
+        let alignments = self.votes.get(record.qname())?;
         assign(
             alignments
                 .iter()
-                .filter(|alignment| alignment.pos.abs_diff(pos) <= MATE_REACH)
+                .filter(|alignment| alignment.place.reaches(place))
                 .flat_map(|alignment| alignment.votes.iter().copied()),
         )
     }
+}
 
-    /// Write `record`'s `HP` and `PS`, or remove them where its fragment has
-    /// no tag.
-    pub(super) fn tag(&self, record: &mut Record) -> Result<()> {
-        match self.tag_of(record) {
-            Some(HaplotypeTag { set, haplotype }) => {
-                replace_aux(record, b"HP", Aux::U8(haplotype.number()))?;
-                replace_aux(record, b"PS", Aux::I32(set))
-            }
-            None => {
-                remove_aux_if_present(record, b"HP")?;
-                remove_aux_if_present(record, b"PS")
-            }
+/// Write `record`'s `HP` and `PS`, or remove them where its fragment has no
+/// tag.
+fn write_tag(record: &mut RawBamRecord, tag: Option<HaplotypeTag>) -> Result<()> {
+    let Some(HaplotypeTag { set, haplotype }) = tag else {
+        // Most reads carry neither, and an edit copies the aux block; the
+        // scan still fails on malformed tags, as an edit would.
+        let mut tags = record.aux().iter_checked();
+        let present = tags.try_fold(false, |present, tag| {
+            tag.map(|(tag, _)| present || tag == *b"HP" || tag == *b"PS")
+        });
+        if !present.wrap_err("could not read the tags")? {
+            return Ok(());
         }
-    }
+        return record
+            .edit_aux(|aux| {
+                aux.remove(*b"HP");
+                aux.remove(*b"PS");
+                Ok(())
+            })
+            .wrap_err("could not remove the haplotype tags");
+    };
+    record
+        .edit_aux(|aux| {
+            aux.set_int(*b"HP", i64::from(haplotype.number()))?;
+            aux.set_int(*b"PS", i64::from(set))
+        })
+        .wrap_err("could not write the haplotype tags")
 }
 
 #[cfg(test)]

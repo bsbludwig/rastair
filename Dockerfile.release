@@ -12,9 +12,9 @@
 
 FROM redhat/ubi8:8.8 AS builder
 
-# cmake: libz-sys compiles zlib-ng. git: several cargo dependencies are git
-# sources. clang-devel/llvm-devel: insurance in case hts-sys ever re-enables its
-# optional bindgen feature — the current build does not use libclang.
+# git: several cargo dependencies are git sources. cmake, clang-devel and
+# llvm-devel are what htslib needs; this build does not compile it (only the
+# tests do), so it does not use them.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc gcc-c++ make cmake git perl clang-devel llvm-devel tar gzip xz which \
     && dnf clean all

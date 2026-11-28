@@ -252,6 +252,7 @@ pub fn call(mut params: CallParams) -> Result<()> {
         .wrap_err("Failed to create thread pool for rayon")?;
     let processed = segments::process_in_order(
         &pool,
+        None,
         &regions,
         || readers.fork().wrap_err("Failed to open readers in worker thread"),
         |readers, region| Ok(process_region_wrapper(region, readers, params, &ml, failed_segments)),
