@@ -11,7 +11,7 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clio::ClioPath;
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use rustc_hash::FxHashSet;
-use seqair::vcf::{CoordinateIndex, OutputFormat, Ready, Writer as SeqWriter};
+use seqair::vcf::{IndexKind, OutputFormat, Ready, Writer as SeqWriter};
 use seqair_types::SmolStr;
 use std::{ffi::OsStr, io::Write, num::NonZeroUsize};
 use tracing::{debug, warn};
@@ -177,7 +177,7 @@ impl VcfParams {
             std::path::PathBuf::from(format!(
                 "{}.{}",
                 vcf_output.path().display(),
-                CoordinateIndex::SUFFIX
+                IndexKind::Csi.suffix()
             ))
         });
 

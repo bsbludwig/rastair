@@ -48,10 +48,10 @@ We provide a pre-built binary for Linux (x86):
 
 - [rastair-v{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz](https://s3.eu-west-2.amazonaws.com/com.rastair.releases/build/release-v{{VERSION}}/rastair-v{{VERSION}}-x86_64-unknown-linux-gnu.tar.gz) (64-bit, x86)
 
-This binary was built on Ubuntu 20.04 but should work on most recent distributions.
+This binary is built on RHEL 8 and works on distributions with glibc 2.28 or newer.
 
 > [!NOTE]
-> While rastair itself is statically linked and therefore independent of system libraries, this is unfortunately not yet the case for htslib. If your system uses a GLIBC older than 2.30, then you will have to [compile from source](#building-from-source).
+> The binary brings the libraries it needs with it; the system's C library is the only one it takes from your machine. If your system uses a GLIBC older than 2.28, then you will have to [compile from source](#building-from-source).
 
 ### macOS
 
@@ -64,7 +64,7 @@ For Apple users, we provide both Apple Silicon and Intel binaries:
 ## Building from source
 
 ### Pre-requisites
-To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install). You do not need to pick a version: the repository contains a `rust-toolchain.toml`, so `rustup` downloads and uses the exact toolchain rastair is built and tested with. Rastair depends on [rust-htslib](https://github.com/rust-bio/rust-htslib), which currently requires a working [clang](https://clang.llvm.org/get_started.html) compiler as well as [cmake](https://cmake.org/download/). On most systems, these are either already available or can be installed using a standard package manager:
+To compile from source, you need a working [Rust installation](https://www.rust-lang.org/tools/install). You do not need to pick a version: the repository contains a `rust-toolchain.toml`, so `rustup` downloads and uses the exact toolchain rastair is built and tested with. Building also needs a C compiler, since a few dependencies compile C code they bring along. Running the test suite additionally needs [cmake](https://cmake.org/download/): the tests read rastair's output back with [htslib](https://github.com/rust-bio/rust-htslib) as an independent check, and building htslib takes it. Rastair itself no longer uses htslib. On most systems, both are either already available or can be installed using a standard package manager:
 
 First, clone the repo:
 

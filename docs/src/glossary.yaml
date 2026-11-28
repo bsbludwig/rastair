@@ -269,7 +269,7 @@
 - key: htslib
   group: "Tools"
   description: |
-    A C library for reading/writing sequencing data, used by tools like @samtools and @bcftools to manipulate @SAM, @BAM, and @VCF files. Rastair uses the @Rust bindings provided by the `rust-htslib` crate.
+    A C library for reading/writing sequencing data, used by tools like @samtools and @bcftools to manipulate @SAM, @BAM, and @VCF files. Rastair reads and writes these formats with seqair instead; only its tests use htslib, through the `rust-htslib` crate, to check that output.
 
 - key: mapQ
   long: "mapping quality"

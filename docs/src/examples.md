@@ -126,17 +126,23 @@ For a description of the per-read bed format, see the [BED format](formats/bed.m
 Alternatively, we also support two different ways to include methylation information in the bam file directly. To do this, you need to first generate a per-position bed file with `rastair call` as described earlier. Once you have this, you can annotate your input bam with the `XM`/`XR` tags used in [Bismark](https://felixkrueger.github.io/Bismark/bismark/alignment/) and several other short-read methylation callers:
 
 ```bash
-rastair bam legacy -r reference.fa.gz --bam test_xm.bam test.bam test.bed.gz
+rastair bam legacy -r reference.fa.gz -o test_xm.bam test.bam test.bed.gz
 ```
 
 > [!TIP]
 > All the `bam` subcommands also supports @CRAM input, but output will be written in @BAM.
+> They read the input front to back and write every record, unmapped ones included, in input order, so the input needs no index.
+> Unsorted input works too, but slowly: sort it by coordinate first.
+> Only `--region` on a @BAM (or bgzipped SAM) uses its index, to read just the reads overlapping the regions.
 
 Alternatively, we also support the new official SAM standard for recording per-read methylation via [the `MM` tags](https://samtools.github.io/hts-specs/SAMtags.pdf):
 
 ```bash
-rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
+rastair bam standard -r reference.fa.gz -o test_mm.bam test.bam test.bed.gz
 ```
+
+Both commands also take the VCF or BCF file from `rastair call` in place of the bed file.
+The reads are then also tagged with their haplotype (`HP`) and phase set (`PS`), see [haplotype tags](formats/modbam.md#haplotype-tags).
 
 > [!WARNING]
 > Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!

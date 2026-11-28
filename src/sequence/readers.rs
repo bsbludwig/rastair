@@ -24,8 +24,7 @@ use color_eyre::{
     Result, Section,
     eyre::{Context, ContextCompat, ensure},
 };
-use rust_htslib::bam::{self, HeaderView, Read as _};
-use seqair_types::SmolStr;
+use seqair::{bam::BamHeader, reader::IndexedReader};
 use tracing::{debug, instrument, trace};
 
 #[cfg(test)]
@@ -48,7 +47,6 @@ mod seqair_readers {
         utils::{CliRegionInput, RegionString},
     };
     use color_eyre::eyre::{ContextCompat as _, Result, WrapErr as _, ensure};
-    use seqair::bam::aux::Aux;
     use seqair::bam::record_store::{
         CustomizeRecordStore, FilterRawFields, RecordStore, SlimRecord,
     };
@@ -143,7 +141,7 @@ mod seqair_readers {
         fn filter_raw(&mut self, fields: &FilterRawFields<'_>) -> bool {
             self.read_flags.filter_flags(fields.flags.raw(), self.pairing)
                 && fields.mapq.at_least(self.min_mapq)
-                && self.tag_requirement.allows(Some(Aux::new(fields.aux_bytes)))
+                && self.tag_requirement.allows(Some(fields.aux))
         }
 
         /// The mask needs the strand, which `compute` resolves, so this read
@@ -194,7 +192,7 @@ mod seqair_readers {
             let Some(ref_base) = reference.base_at(matched.rpos) else {
                 continue;
             };
-            let observed = matched.query;
+            let observed = matched.query.to_base();
 
             if ref_base == Base::Unknown || observed == Base::Unknown || ref_base == observed {
                 continue;
@@ -223,7 +221,7 @@ mod seqair_readers {
     ) {
         let Ok(seq) = rec.seq(store) else { return };
         let pair_at = |first: usize, second: usize| -> Option<[Base; 2]> {
-            Some([*seq.get(first)?, *seq.get(second)?])
+            Some([seq.get(first)?.to_base(), seq.get(second)?.to_base()])
         };
         let mut bump = |motif: [Base; 2]| match motif {
             [Base::T, Base::G] => *tg = tg.saturating_add(1),
@@ -458,7 +456,9 @@ mod seqair_readers {
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct ReaderParams {
-    /// Path to sorted and indexed BAM or CRAM file
+    /// Path to a BAM or CRAM file: sorted and indexed for `call` and
+    /// `per-read`; `bam` takes any order, and SAM, and only `--region` there
+    /// needs the index
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     pub bam_file: ClioPath,
@@ -484,7 +484,8 @@ impl ReaderParams {
     pub fn readers(&self) -> Result<Readers> {
         let fasta = open_fasta(&self.fasta_file)?;
         let bam_path = self.bam_file.path();
-        let mut bam = bam::IndexedReader::from_path(bam_path)
+        let bam = IndexedReader::open_with_reference(bam_path, self.fasta_file.path())
+            .wrap_err_with(|| format!("Failed to open alignment file {}", bam_path.display()))
             .with_suggestion(|| {
                 format!(
                     "Ensure the BAM/CRAM file is sorted and indexed with \
@@ -492,9 +493,6 @@ impl ReaderParams {
                 )
             })
             .note("If you have a .bai/.crai file, ensure it is in the same directory as the BAM/CRAM file.")?;
-        bam.set_reference(self.fasta_file.path())
-            .wrap_err("Failed to set FASTA reference for BAM reader")
-            .note("Rastair itself already opened the FASTA file successfully, this error is from the BAM reader implementation")?;
 
         Ok(Readers { fasta, bam, params: self.clone() })
     }
@@ -515,7 +513,7 @@ impl ReaderParams {
 
 pub struct Readers {
     pub fasta: FastaReader,
-    pub bam: bam::IndexedReader,
+    pub bam: IndexedReader,
     params: ReaderParams,
 }
 
@@ -539,21 +537,19 @@ impl Readers {
         } else {
             debug!("fetching all regions");
             get_full_regions(self.bam.header())
-                .wrap_err("Failed to get all regions from BAM file")?
         };
 
         // Drop BAM contigs the FASTA reference lacks (e.g. decoy/alt contigs);
         // explicitly requested regions instead stay a hard error.
-        let fasta_contigs = self.fasta.sequence_names()?;
+        let fasta_contigs = self.fasta.sequence_names();
         let full_regions = crate::sequence::regions::retain_fasta_regions(
             full_regions,
             |contig| fasta_contigs.contains(contig),
             self.params.regions.is_some(),
         )?;
         let header = self.bam.header();
-        let full_regions = crate::sequence::regions::sort_and_merge(full_regions, |contig| {
-            header.tid(contig.as_bytes())
-        });
+        let full_regions =
+            crate::sequence::regions::sort_and_merge(full_regions, |contig| header.tid(contig));
 
         let initial_start = full_regions.first().wrap_err("No regions found")?.start;
         let chunked = ChunkedRegions {
@@ -587,13 +583,13 @@ impl Readers {
 }
 
 #[instrument(level = "debug", skip(bam_header))]
-fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result<SelectedRegion> {
+fn get_selected_region(region: &RegionString, bam_header: &BamHeader) -> Result<SelectedRegion> {
     let chromosome = region.chromosome.as_str();
     // If no start position is specified, default to beginning of chromosome
     let start = region.start.map(|p| p.to_zero_based().as_u64()).unwrap_or(0);
 
     let target_id = bam_header
-        .tid(region.chromosome.as_bytes())
+        .tid(&region.chromosome)
         .wrap_err_with(|| {
             format!("Failed to fetch target ID for chromosome {} from header", region.chromosome)
         })
@@ -626,27 +622,16 @@ fn get_selected_region(region: &RegionString, bam_header: &HeaderView) -> Result
 }
 
 #[instrument(level = "debug", skip(header))]
-fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
+fn get_full_regions(header: &BamHeader) -> Vec<SelectedRegion> {
     header
-        .target_names()
-        .iter()
-        .enumerate()
-        .filter(|(_, name)| !name.is_empty())
-        .map(|(tid, name)| -> Result<SelectedRegion> {
-            let chr = SmolStr::new(
-                std::str::from_utf8(name).wrap_err("BAM target name not valid UTF-8")
-                    .note("This is against the BAM specification, please check with the tool that created this file")?,
-            );
-            let length = header
-                .target_len(u32::try_from(tid).wrap_err("Failed to get a target ID that was part of the BAM header")
-                    .note("The BAM header might be corrupt")?)
-                .wrap_err("Failed to get target length")?;
-
-            Ok(SelectedRegion::entire_contig(Region {
-                contig: chr,
+        .targets()
+        .filter(|target| !target.name.is_empty())
+        .map(|target| {
+            SelectedRegion::entire_contig(Region {
+                contig: target.name,
                 start: 0,
-                end: length,
-            }))
+                end: target.length,
+            })
         })
         .collect()
 }
@@ -654,6 +639,7 @@ fn get_full_regions(header: &bam::HeaderView) -> Result<Vec<SelectedRegion>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call::tests::pileup::iupac;
     use std::path::PathBuf;
 
     /// `--require-tags` is judged on the raw aux bytes, before the depth cap
@@ -678,7 +664,7 @@ mod tests {
         let mut store = RecordStore::<RastairReadExtras>::new();
         for (name, group) in [(&b"tagged"[..], "keep"), (b"other", "drop")] {
             let mut aux = AuxData::new();
-            aux.set_string(*b"RG", group.as_bytes());
+            aux.set_string(*b"RG", group.as_bytes()).unwrap();
             store
                 .push_fields(
                     Pos0::new(10).unwrap(),
@@ -689,7 +675,7 @@ mod tests {
                     0,
                     name,
                     &[CigarOp::new(CigarOpType::Match, 8)],
-                    &[Base::A; 8],
+                    &iupac(&[Base::A; 8]),
                     &[40u8; 8],
                     aux.as_bytes(),
                     Some(tid),
@@ -731,7 +717,7 @@ mod tests {
                     0,
                     name,
                     &[CigarOp::new(CigarOpType::Match, 8)],
-                    &[Base::A; 8],
+                    &iupac(&[Base::A; 8]),
                     &[40u8; 8],
                     &[],
                     Some(tid),
@@ -779,7 +765,7 @@ mod tests {
                 0,
                 b"early",
                 &[CigarOp::new(CigarOpType::Match, 8)],
-                &[A, A, T, G, A, A, A, A],
+                &iupac(&[A, A, T, G, A, A, A, A]),
                 &[40u8; 8],
                 &[],
                 Some(tid),
@@ -811,12 +797,20 @@ mod tests {
         use std::io::Write as _;
         let dir = tempfile::TempDir::new().expect("tempdir");
         let path = dir.path().join("ref.fa");
+        const SEQ: &str = "ACGTACGTAC";
         let mut file = std::fs::File::create(&path).expect("create fasta");
+        let mut index = std::fs::File::create(dir.path().join("ref.fa.fai")).expect("create fai");
+        let mut offset = 0;
         for contig in contigs {
-            writeln!(file, ">{contig}\nACGTACGTAC").expect("write fasta");
+            let header = format!(">{contig}\n");
+            writeln!(file, "{header}{SEQ}").expect("write fasta");
+            // NAME, LENGTH, OFFSET of the first base, LINEBASES, LINEWIDTH
+            let (bases, width) = (SEQ.len(), SEQ.len() + 1);
+            writeln!(index, "{contig}\t{bases}\t{}\t{bases}\t{width}", offset + header.len())
+                .expect("write fai");
+            offset += header.len() + width;
         }
-        drop(file);
-        rust_htslib::faidx::build(&path).expect("build fai");
+        drop((file, index));
         let clio = ClioPath::new(path).expect("clio path");
         (dir, clio)
     }
@@ -892,7 +886,7 @@ mod tests {
         assert_eq!(full_region.start, 0); // Should default to the first base
 
         // The end should be the chromosome length from the header
-        let chr19_tid = header.tid(b"chr19").unwrap();
+        let chr19_tid = header.tid("chr19").unwrap();
         let chr19_len = header.target_len(chr19_tid).unwrap();
         assert_eq!(full_region.end, chr19_len);
 
@@ -921,7 +915,7 @@ mod tests {
         assert!(result.is_err());
 
         // Get valid chromosome length
-        let chr19_tid = header.tid(b"chr19").unwrap();
+        let chr19_tid = header.tid("chr19").unwrap();
         let chr19_len = header.target_len(chr19_tid).unwrap();
 
         // Test start position beyond chromosome length
@@ -976,22 +970,21 @@ mod tests {
         let readers = params.readers()?;
         let header = readers.bam.header();
 
-        let full_regions = get_full_regions(header)?;
+        let full_regions = get_full_regions(header);
 
         // Should have at least one region
         assert!(!full_regions.is_empty());
 
         // Verify that chromosome names match what's in the BAM header
         for (i, region) in full_regions.iter().enumerate() {
-            let target_name = std::str::from_utf8(header.target_names()[i]).unwrap();
+            let target_name = header.target_names().nth(i).unwrap();
             assert_eq!(region.contig, target_name);
 
             // The contig's first base, 0-based
             assert_eq!(region.start, 0);
 
             // End should match the chromosome length
-            let tid = u32::try_from(i).unwrap();
-            let chr_len = header.target_len(tid).unwrap();
+            let chr_len = header.targets().nth(i).unwrap().length;
             assert_eq!(region.end, chr_len);
         }
 

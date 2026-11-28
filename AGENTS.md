@@ -8,8 +8,8 @@ De-novo CpG positions arise when X→C or X→G SNPs occur.
 C→T and G→A SNPs are confounded with methylation, which is what makes variant calling hard.
 Rastair combines machine learning with a TAPS-aware pair-HMM to decide which variants are real.
 
-Pileups are read and VCF/BCF is written with seqair.
-rust-htslib does the BAM rewriting, `per-read` and the reading of VCF/BCF.
+Alignments, FASTA and VCF/BCF are read and written with seqair; noodles reads the calls BED and writes its tabix index.
+rust-htslib is a dev-dependency only: tests read rastair's output with it, as a reader that is not seqair's.
 
 ## Structure
 
@@ -32,7 +32,7 @@ Area-specific knowledge lives in module doc comments; read the one for the code 
 | phasing                                        | `src/call/phasing.rs`, its `problem` and `solver` modules       |
 | measuring accuracy, comparing binaries         | `docs/measuring-accuracy.md`                                    |
 | readers, strand assignment                     | `src/sequence/readers.rs`, `docs/src/calling/strand-guesser.md` |
-| BAM rewriting, XM vs MM/ML                     | `src/bam.rs`                                                    |
+| BAM rewriting, XM vs MM/ML, haplotype tags     | `src/bam.rs`, `src/bam/haplotag.rs`                             |
 | external tool tests                            | `tests/bam_external_tools.rs`, `Dockerfile.ci`                  |
 | ML feature layout                              | `src/metrics/ml/features.rs`                                    |
 | training a model                               | `src/train.rs`                                                  |

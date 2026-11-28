@@ -1,11 +1,14 @@
 use crate::sequence::Segment;
-use rust_htslib::bam::{Record, ext::BamRecordExtensions as _};
 use rustc_hash::FxHasher;
+use seqair::bam::{RawBamRecord, aligned_pairs::MatchPosition};
 use seqair_types::{Base, Pos0, Strand};
 use std::hash::{Hash as _, Hasher as _};
 use tracing::trace;
 
-pub(crate) fn infer_strand_from_mismatch_motifs(record: &Record, segment: &Segment) -> Strand {
+pub(crate) fn infer_strand_from_mismatch_motifs(
+    record: &RawBamRecord,
+    segment: &Segment,
+) -> Strand {
     let evidence = collect_mismatch_motif_evidence(record, segment);
     let likelihood = evidence.ot_likelihood();
     let strand = match evidence.tg.cmp(&evidence.ca) {
@@ -26,21 +29,20 @@ pub(crate) fn infer_strand_from_mismatch_motifs(record: &Record, segment: &Segme
     strand
 }
 
-fn collect_mismatch_motif_evidence(record: &Record, segment: &Segment) -> ReadOrientationEvidence {
-    let seq = record.seq().as_bytes();
+fn collect_mismatch_motif_evidence(
+    record: &RawBamRecord,
+    segment: &Segment,
+) -> ReadOrientationEvidence {
+    let mut seq = Vec::with_capacity(record.seq_len());
+    record.decode_seq_into(&mut seq);
     let mut evidence = ReadOrientationEvidence::default();
 
-    for [pos_in_read, pos_in_ref] in record.aligned_pairs_full() {
-        let (Some(pos_in_read), Some(pos_in_ref)) = (pos_in_read, pos_in_ref) else {
-            continue;
-        };
-        let Some(read_idx) = usize::try_from(pos_in_read).ok() else {
-            continue;
-        };
+    for MatchPosition { qpos, rpos, .. } in crate::bam::aligned_bases(record) {
+        let read_idx = qpos.as_usize();
         let Some(observed) = seq.get(read_idx).copied().map(Base::from) else {
             continue;
         };
-        let Some(reference) = reference_base(segment, pos_in_ref) else {
+        let Some(reference) = reference_base(segment, rpos) else {
             continue;
         };
 
@@ -78,16 +80,17 @@ fn count_motif(motif: [Base; 2], evidence: &mut ReadOrientationEvidence) {
     }
 }
 
-fn pseudo_random_strand(record: &Record) -> Strand {
+fn pseudo_random_strand(record: &RawBamRecord) -> Strand {
     let mut hasher = FxHasher::default();
     record.qname().hash(&mut hasher);
-    record.pos().hash(&mut hasher);
-    record.flags().hash(&mut hasher);
+    // As 64-bit position and 16-bit flags: the hash decides ties, so its
+    // input keeps the shape it always had.
+    record.pos().map_or(-1, |pos| i64::from(pos.as_u32())).hash(&mut hasher);
+    record.flags().raw().hash(&mut hasher);
     if hasher.finish() & 1 == 0 { Strand::OT } else { Strand::OB }
 }
 
-fn reference_base(segment: &Segment, pos_in_ref: i64) -> Option<Base> {
-    let pos_in_ref = Pos0::try_from(pos_in_ref).ok()?;
+fn reference_base(segment: &Segment, pos_in_ref: Pos0) -> Option<Base> {
     let idx = segment.pos_to_idx(pos_in_ref).ok()?;
     segment.sequence.get(idx).copied().map(Base::from)
 }
@@ -106,13 +109,12 @@ impl ReadOrientationEvidence {
 }
 
 #[cfg(test)]
-mod tests {
-    use rust_htslib::bam::record::{Cigar, CigarString};
-
+pub(crate) mod tests {
     use super::*;
     use crate::sequence::{ChunkRegion, Region};
+    use seqair::reader::AlignmentStream;
 
-    fn test_segment(sequence: &[u8]) -> Segment {
+    pub(crate) fn test_segment(sequence: &[u8]) -> Segment {
         let start = 100u64;
         let end = start + u64::try_from(sequence.len()).expect("sequence length fits") - 1;
         Segment {
@@ -126,15 +128,27 @@ mod tests {
         }
     }
 
-    fn test_record(qname: &[u8], flags: u16, start: i64, sequence: &[u8]) -> Record {
-        let mut record = Record::new();
-        let cigar = CigarString(
-            vec![Cigar::Match(u32::try_from(sequence.len()).expect("sequence length fits in u32"))]
-                .into(),
+    /// A read of `sequence` aligned without gaps at the 0-based `start`, its
+    /// mate at the contig's first base; read through the stream reader, since
+    /// a record has no public constructor.
+    pub(crate) fn test_record(
+        qname: &[u8],
+        flags: u16,
+        start: i64,
+        sequence: &[u8],
+    ) -> RawBamRecord {
+        let sam = format!(
+            "@HD\tVN:1.6\n@SQ\tSN:chrTest\tLN:100000\n{}\t{flags}\tchrTest\t{}\t60\t{}M\t=\t1\t0\t{}\t{}\n",
+            String::from_utf8_lossy(qname),
+            start + 1,
+            sequence.len(),
+            String::from_utf8_lossy(sequence),
+            "I".repeat(sequence.len()),
         );
-        record.set(qname, Some(&cigar), sequence, &vec![40; sequence.len()]);
-        record.set_flags(flags);
-        record.set_pos(start);
+        let mut stream = AlignmentStream::from_reader(std::io::Cursor::new(sam.into_bytes()))
+            .expect("the SAM text opens");
+        let mut record = RawBamRecord::default();
+        assert!(stream.read_record(&mut record).expect("the SAM text parses"), "no record");
         record
     }
 

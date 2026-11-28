@@ -36,7 +36,6 @@ use crate::{
     utils::IntoF64 as _,
 };
 use color_eyre::eyre::{ContextCompat, Result};
-use rust_htslib::bcf::record::GenotypeAllele;
 use seqair_types::{Base, Phred, Probability, SmallVec};
 use std::num::NonZeroU8;
 
@@ -271,50 +270,22 @@ impl GenotypeTag {
     pub const TT: Self = Self::HomAlt(NonZeroU8::new(1).unwrap());
 }
 
-/// Reads a genotype back from a VCF, as `convert` does.
-impl TryFrom<&[GenotypeAllele]> for GenotypeTag {
-    type Error = color_eyre::Report;
-
-    fn try_from(alleles: &[GenotypeAllele]) -> Result<Self> {
-        use color_eyre::eyre::bail;
-
+impl GenotypeTag {
+    /// The genotype of a diploid `GT`'s allele numbers, in either order and
+    /// whatever its phase, as `convert` reads one back from a VCF.
+    pub fn from_allele_numbers(alleles: [u16; 2]) -> Result<Self> {
+        let alt = |number: u16| u8::try_from(number).ok().and_then(NonZeroU8::new);
         match alleles {
-            // Homozygous reference: 0/0
-            [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
-            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(0)] => Ok(Self::HomRef),
-
-            // Heterozygous with reference: 0/n or n/0
-            [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(n)]
-            | [GenotypeAllele::Unphased(n), GenotypeAllele::Unphased(0)]
-            | [GenotypeAllele::Phased(0), GenotypeAllele::Phased(n)]
-            | [GenotypeAllele::Phased(n), GenotypeAllele::Phased(0)]
-                if *n > 0 && *n <= 255 =>
-            {
-                #[allow(clippy::cast_possible_truncation, reason = "safe: n is in 1..=255")]
-                let n = *n as u8;
-                Ok(Self::RefHet(NonZeroU8::new(n).wrap_err("expected non-null value")?))
+            [0, 0] => Ok(Self::HomRef),
+            [0, n] | [n, 0] => {
+                alt(n).map(Self::RefHet).wrap_err_with(|| format!("Unsupported allele {n} in GT"))
             }
-
-            // Both alleles are alt (non-zero)
-            [GenotypeAllele::Unphased(m), GenotypeAllele::Unphased(n)]
-            | [GenotypeAllele::Phased(m), GenotypeAllele::Phased(n)]
-                if *m > 0 && *m <= 255 && *n > 0 && *n <= 255 =>
-            {
-                #[allow(clippy::cast_possible_truncation, reason = "n,m in 1..=255")]
-                let (m, n) = (*m as u8, *n as u8);
-                let m = NonZeroU8::new(m).wrap_err("expected non-null value")?;
-                let n = NonZeroU8::new(n).wrap_err("expected non-null value")?;
-
-                if m == n {
-                    // Homozygous alt: n/n
-                    Ok(Self::HomAlt(m))
-                } else {
-                    // Compound heterozygous: m/n (sorted)
-                    Ok(Self::alt_het(m, n))
-                }
+            [m, n] => {
+                let (m, n) = alt(m)
+                    .zip(alt(n))
+                    .wrap_err_with(|| format!("Unsupported alleles {m} and {n} in GT"))?;
+                Ok(if m == n { Self::HomAlt(m) } else { Self::alt_het(m, n) })
             }
-
-            _ => bail!("Unsupported or invalid genotype format: {alleles:?}"),
         }
     }
 }
@@ -593,9 +564,9 @@ mod tests {
     fn genotype_tag_roundtrips_through_alleles(tc: TestCase) {
         let n = tc.draw(nonzero_u8s());
         for tag in [GenotypeTag::HomRef, GenotypeTag::RefHet(n), GenotypeTag::HomAlt(n)] {
-            let alleles = tag.alleles().map(|a| GenotypeAllele::Unphased(a.number().into()));
+            let alleles = tag.alleles().map(|a| u16::from(a.number()));
             let roundtripped =
-                GenotypeTag::try_from(alleles.as_slice()).expect("valid alleles should roundtrip");
+                GenotypeTag::from_allele_numbers(alleles).expect("valid alleles should roundtrip");
             assert_eq!(roundtripped, tag, "roundtrip failed for {tag:?}");
         }
     }

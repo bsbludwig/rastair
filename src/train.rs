@@ -65,7 +65,7 @@ use crate::{
     regions::ConfidentRegions,
     sequence::{ChunkRegion, ReaderParams, Region, SegmentationParams, SeqairReaders},
     utils::{CliRegionInput, cli, map_surrounding},
-    verify::for_each_record_in_regions,
+    verify::{for_each_record_in_regions, open_vcf},
 };
 use biosphere::{FlatForest, MaxFeatures, RandomForest, RandomForestParameters};
 use clap::value_parser;
@@ -76,7 +76,7 @@ use ndarray::Array2;
 use rand::prelude::*;
 use rayon::prelude::*;
 use reservoir::{ByLabel, KeySource, Label, SamplingRequest, TrainingData};
-use rust_htslib::bcf::{self, Read as _};
+use seqair::vcf::{Locus, Site};
 use seqair_types::{Base, Pos0, RegionString, SmolStr};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -619,12 +619,9 @@ fn truth_keys(
     regions: &[RegionString],
     threads: usize,
 ) -> Result<HashMap<SmolStr, ContigTruth>> {
-    let header =
-        bcf::Reader::from_path(path).wrap_err("Failed to read the header")?.header().clone();
-    let (declared, undeclared): (Vec<RegionString>, Vec<RegionString>) = regions
-        .iter()
-        .cloned()
-        .partition(|region| header.name2rid(region.chromosome.as_bytes()).is_ok());
+    let file = open_vcf(path)?;
+    let (declared, undeclared): (Vec<RegionString>, Vec<RegionString>) =
+        regions.iter().cloned().partition(|region| file.contig(&region.chromosome).is_some());
     let undeclared: BTreeSet<&str> = undeclared.iter().map(|r| r.chromosome.as_str()).collect();
     if !undeclared.is_empty() {
         warn!(
@@ -635,26 +632,23 @@ fn truth_keys(
 
     let mut contigs: HashMap<SmolStr, ContigTruth> =
         declared.iter().map(|r| (r.chromosome.clone(), ContigTruth::default())).collect();
-    for_each_record_in_regions(path, &declared, threads, |record, header| {
-        let Some(truth) = record
-            .rid()
-            .and_then(|rid| header.rid2name(rid).ok())
-            .and_then(|name| std::str::from_utf8(name).ok())
-            .and_then(|name| contigs.get_mut(name))
-        else {
-            return;
+    for_each_record_in_regions(&file, &declared, threads, |(locus, site): &(Locus, Site)| {
+        let Some(truth) = contigs.get_mut(locus.contig().name().as_str()) else {
+            return Ok(());
         };
-        if !record.has_filter("PASS".as_bytes()) {
-            return;
+        if !crate::vcf::passed_filters(site) {
+            return Ok(());
         }
-        let Ok(pos) = u64::try_from(record.pos()) else { return };
-        let alleles = record.alleles();
-        let Some((&ref_allele, alts)) = alleles.split_first() else { return };
-        for &alt_allele in alts {
-            if let Some(key) = PositionKey::of_truth(pos, ref_allele, alt_allele) {
+        let Some(pos) = locus.start().pos0().map(|pos| pos.as_u64()) else { return Ok(()) };
+        let alleles = site.alleles();
+        for alt_allele in alleles.alts() {
+            if let Some(key) =
+                PositionKey::of_truth(pos, alleles.reference(), alt_allele.as_bytes())
+            {
                 truth.snps.insert(key);
             }
         }
+        Ok(())
     })?;
     info!(snps = contigs.values().map(|t| t.snps.len()).sum::<usize>(), "Loaded true variants");
     Ok(contigs)
@@ -1220,17 +1214,25 @@ mod tests {
 
     /// Write a bgzipped, indexed truth VCF declaring `chr1` and `chr2`.
     fn truth_vcf(dir: &Path, records: &[u8]) -> Result<std::path::PathBuf> {
-        use std::io::Write as _;
-        let path = dir.join("truth.vcf.gz");
-        let mut vcf = rust_htslib::bgzf::Writer::from_path(&path)?;
-        vcf.write_all(
+        use seqair::vcf::{FullRecord, OutputFormat, VcfFile, Writer};
+        let mut text =
             b"##fileformat=VCFv4.2\n##FILTER=<ID=PASS,Description=\"All filters passed\">\n\
               ##contig=<ID=chr1,length=1000>\n##contig=<ID=chr2,length=1000>\n\
-              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
-        )?;
-        vcf.write_all(records)?;
-        drop(vcf);
-        bcf::index::build(&path, None, 1, bcf::index::Type::Csi(14))?;
+              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                .to_vec();
+        text.extend_from_slice(records);
+        let plain = VcfFile::from_bytes(text, None)?;
+
+        let path = dir.join("truth.vcf.gz");
+        let mut writer = Writer::new(std::fs::File::create(&path)?, OutputFormat::VcfGz)
+            .write_header(plain.header())?;
+        let mut reader = plain.reader::<FullRecord>().open()?;
+        while let Some(record) = reader.next_record()? {
+            writer.copy_record(record)?.emit()?;
+        }
+        let (_, index) = writer.finish()?;
+        let index = index.wrap_err("a compressed VCF comes with an index")?;
+        index.write_to_path(format!("{}.{}", path.display(), index.suffix()))?;
         Ok(path)
     }
 
