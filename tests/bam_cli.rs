@@ -950,3 +950,43 @@ fn an_unmethylated_cpg_keeps_its_tags() -> Result<()> {
     ensure!(with_mm == 1, "{with_mm} reads have MM entries, expected the one methylated read");
     Ok(())
 }
+
+/// A read is written by the segment it starts in and reaches past that
+/// segment's end, so its CpGs beyond the boundary need the calls from there
+/// too: the tags do not depend on where the segments are cut.
+#[test]
+fn methylation_tags_do_not_depend_on_the_segments() -> Result<()> {
+    const REGION: &str = "--region=chr19:6100000-6110000";
+    let dir = TempDir::new()?;
+    let calls = dir.path().join("calls.bed.gz");
+    rastair()
+        .args(CALL_TEST_BAM)
+        .args([REGION, "--bed"])
+        .arg(&calls)
+        .silent()
+        .succeeds()
+        .wrap_err("Failed to generate calls")?;
+
+    for mode in ["legacy", "standard"] {
+        let rewrite = |segment_length: &str| -> Result<Vec<bam::Record>> {
+            let out = dir.path().join(format!("{mode}_{segment_length}.bam"));
+            rastair()
+                .args(["bam", mode, "--fasta-file=tests/data/test.fasta.gz", REGION])
+                .args(["--segment-max-length", segment_length, "tests/data/test.bam"])
+                .arg(&calls)
+                .arg("-o")
+                .arg(&out)
+                .silent()
+                .succeeds()
+                .wrap_err("Failed to rewrite BAM")?;
+            let mut reader = bam::Reader::from_path(&out).wrap_err("open rewritten BAM")?;
+            reader.records().map(|record| record.wrap_err("read record")).collect()
+        };
+
+        let whole = rewrite("100000")?;
+        let cut = rewrite("1000")?;
+        ensure!(!whole.is_empty(), "no reads in {REGION}");
+        ensure!(whole == cut, "{mode}: tags differ between one segment and ten");
+    }
+    Ok(())
+}

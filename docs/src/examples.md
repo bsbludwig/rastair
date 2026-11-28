@@ -138,6 +138,9 @@ Alternatively, we also support the new official SAM standard for recording per-r
 rastair bam standard -r reference.fa.gz --bam test_mm.bam test.bam test.bed.gz
 ```
 
+Both commands also take the VCF or BCF file from `rastair call` in place of the bed file.
+The reads are then also tagged with their haplotype (`HP`) and phase set (`PS`), see [haplotype tags](formats/modbam.md#haplotype-tags).
+
 > [!WARNING]
 > Be aware that `rastair bam standard` will produce bam files where any T that was deemed a "conversion" in a read is converted back to C, so the sequence information in the source and `MM` annotated files will differ!
 

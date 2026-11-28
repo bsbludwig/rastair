@@ -320,14 +320,14 @@ pub(super) fn remove_modifications(record: &mut Record) -> Result<()> {
     remove_aux_if_present(record, b"ML")
 }
 
-fn replace_aux(record: &mut Record, tag: &[u8; 2], value: Aux<'_>) -> Result<()> {
+pub(super) fn replace_aux(record: &mut Record, tag: &[u8; 2], value: Aux<'_>) -> Result<()> {
     remove_aux_if_present(record, tag)?;
     record
         .push_aux(tag, value)
         .wrap_err_with(|| format!("could not add {} tag", tag.escape_ascii()))
 }
 
-fn remove_aux_if_present(record: &mut Record, tag: &[u8; 2]) -> Result<()> {
+pub(super) fn remove_aux_if_present(record: &mut Record, tag: &[u8; 2]) -> Result<()> {
     match record.remove_aux(tag) {
         Ok(()) | Err(BamError::AuxTagNotFound) => Ok(()),
         Err(error) => Err(error)

@@ -66,6 +66,8 @@ Output:
 - Removed the MessagePack output format and the `view` subcommand.
 - `call` writes a CSI index next to a `.vcf.gz` or `.bcf` output.
 - `bam` replaces existing `XM`, `XR` and `XG` tags instead of failing ([#15](https://github.com/bsbludwig/rastair/issues/15)).
+- `bam` takes the VCF or BCF that `call` writes as its calls, besides the BED file, and then also tags each read pair with its haplotype: `HP` (1 or 2) and `PS`, from the phased heterozygous variants the pair shows. A converted base at a CpG and a read ending inside an indel's repeat cast no vote.
+- `bam` annotates a read's CpGs beyond the end of the segment the read starts in. They were left unmarked, so the tags depended on `--segment-max-length`.
 - `per-read` no longer writes duplicate rows ([#18](https://github.com/bsbludwig/rastair/issues/18)).
 - `bam` annotates a CpG whose BED β is 0. It took every such row for an SNP, so a fully unmethylated CpG had no `XM` (`z`), and a CpG whose few methylated reads round β to `0.00` lost their MM/ML entries. A BED row is now an SNP only where its genotype holds no copy of the CpG's base.
 - `per-read`'s `mod_denovos` and `unmod_denovos` go by each read's base, like `mod_cpgs`, `unmod_cpgs` and `bam`'s tags: `T` or `C` on an OT read, `A` or `G` on an OB read. They listed every read covering a de-novo CpG by the site's β (methylated above 0.5), whatever its base or strand.

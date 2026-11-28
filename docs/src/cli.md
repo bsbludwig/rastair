@@ -2,7 +2,7 @@
 
 This document contains the help content for the `rastair` command-line program.
 
-**Version:** `2.2.0`
+**Version:** `2.3.0-rc1`
 
 **Command Overview:**
 
@@ -378,7 +378,11 @@ Write modBAM with MM/ML tags as specified by the SAM 4.5 spec This will rewrite 
 ###### **Arguments:**
 
 * `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
-* `<CALLS_FILE>` — Rastair's calls to determine methylation
+* `<CALLS_FILE>` — Rastair's calls: which positions are CpGs, and the phase sets
+
+   Either the BED file `call --bed` writes, compressed and indexed with tabix, or the VCF/BCF `call` writes, compressed and indexed (`.vcf.gz` or `.bcf` with its `.csi`).
+
+   Given a VCF or BCF, reads are also tagged with the haplotype they come from: `HP` (1 or 2) and `PS`, the phase set of the heterozygous variants the read pair shows. A BED file holds no phase, so reads keep the `HP` and `PS` they have.
 
 ###### **Input Options:**
 
@@ -415,7 +419,11 @@ Write BAM with "legacy" XR/XG/XM tags, compatible with tools like DRAGEN and Bis
 ###### **Arguments:**
 
 * `<BAM_FILE>` — Path to sorted and indexed BAM or CRAM file
-* `<CALLS_FILE>` — Rastair's calls to determine methylation
+* `<CALLS_FILE>` — Rastair's calls: which positions are CpGs, and the phase sets
+
+   Either the BED file `call --bed` writes, compressed and indexed with tabix, or the VCF/BCF `call` writes, compressed and indexed (`.vcf.gz` or `.bcf` with its `.csi`).
+
+   Given a VCF or BCF, reads are also tagged with the haplotype they come from: `HP` (1 or 2) and `PS`, the phase set of the heterozygous variants the read pair shows. A BED file holds no phase, so reads keep the `HP` and `PS` they have.
 
 ###### **Input Options:**
 

@@ -4,6 +4,14 @@
 //! MM/ML and rewrites SEQ (T→C on OT, A→G on OB). Tags are built in
 //! [`base_modification`].
 //!
+//! The calls are a BED or a VCF/BCF ([`calls`]); with a VCF both modes also
+//! write `HP` and `PS` from its phase sets ([`haplotag`]).
+//!
+//! **A segment owns the reads that start in it, not the positions.** A read
+//! reaches past its segment's end, so calls and reference are fetched for the
+//! span of the owned reads; fetched for the segment alone, CpGs beyond the
+//! boundary go unmarked in every read crossing it.
+//!
 //! **XM and MM/ML encode per-read methylation, not position-level calls.** A
 //! CpG with beta 0.3 (`methylated: Some(false)` in [`RastairCall::Cpg`]) still
 //! has methylated reads that must show `Z` in XM and appear in MM/ML; the call
@@ -20,12 +28,11 @@
 //! coverage.
 
 use crate::{
-    bed::reader::{RastairBedReader, RastairCall},
-    sequence::{ChunkRegion, ReaderParams},
+    bed::reader::RastairCall,
+    sequence::{ChunkRegion, ReaderParams, Region},
     utils::{
         cli,
         file_helpers::{FastaReader, open_fasta},
-        logging::ThisIsABug,
     },
     vcf::CpgSide,
 };
@@ -42,6 +49,8 @@ use seqair_types::{Base, Strand, StrandFromRecord};
 use std::thread::available_parallelism;
 
 mod base_modification;
+mod calls;
+mod haplotag;
 use crate::runtime::{
     fault_injection, partial_output::PartialOutput, progress, progress::ProgressTracker, segments,
     threads,
@@ -50,6 +59,7 @@ use base_modification::remove_modifications;
 pub use base_modification::{
     MethylatedPositions, MethylationContext, XmAnnotation, XrTags, determine_context,
 };
+use calls::CallsReader;
 use tracing::{instrument, warn};
 
 /// Subcommands for `rastair bam`
@@ -87,7 +97,16 @@ pub struct BamRewriteArgs {
     #[arg(help_heading = cli::sections::PROCESSING)]
     pub threads: usize,
 
-    /// Rastair's calls to determine methylation
+    /// Rastair's calls: which positions are CpGs, and the phase sets
+    ///
+    /// Either the BED file `call --bed` writes, compressed and indexed with
+    /// tabix, or the VCF/BCF `call` writes, compressed and indexed
+    /// (`.vcf.gz` or `.bcf` with its `.csi`).
+    ///
+    /// Given a VCF or BCF, reads are also tagged with the haplotype they come
+    /// from: `HP` (1 or 2) and `PS`, the phase set of the heterozygous
+    /// variants the read pair shows. A BED file holds no phase, so reads keep
+    /// the `HP` and `PS` they have.
     #[arg(value_parser=value_parser!(ClioPath).exists().is_file(), value_hint=clap::ValueHint::FilePath)]
     #[arg(help_heading = cli::sections::INPUT)]
     calls_file: ClioPath,
@@ -141,15 +160,13 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
     writer.set_threads(3).wrap_err("failed to set threads")?;
 
     let mut progress = ProgressTracker::new(regions.len());
-    let last = regions.last();
     let processed = segments::process_in_order(
         &pool,
         &regions,
         || WorkerReaders::open(params),
         |WorkerReaders { bam, calls, fasta }, segment| {
             fault_injection::fault_point(fault_injection::FaultPoint::Worker)?;
-            let is_last = last.is_some_and(|last| std::ptr::eq(segment, last));
-            rewrite_region(bam, calls, fasta, segment, mode, is_last)
+            rewrite_region(bam, calls, fasta, segment, mode)
         },
         |records| {
             for record in records {
@@ -174,7 +191,7 @@ pub fn rewrite(params: &BamRewriteArgs, mode: BamMode) -> Result<()> {
 /// What each worker reads from, opened once on its own thread.
 struct WorkerReaders {
     bam: bam::IndexedReader,
-    calls: RastairBedReader,
+    calls: CallsReader,
     fasta: FastaReader,
 }
 
@@ -184,7 +201,7 @@ impl WorkerReaders {
             .wrap_err("Failed to open BAM/CRAM in worker thread")?;
         bam.set_reference(params.segments.fasta_file.path())
             .wrap_err("Failed to set FASTA reference for BAM/CRAM reader in worker thread")?;
-        let calls = RastairBedReader::new(params.calls_file.path())
+        let calls = CallsReader::open(params.calls_file.path())
             .wrap_err("Failed to open calls file in worker thread")?;
         let fasta = open_fasta(params.segments.fasta_file.path())
             .wrap_err("Failed to open FASTA in worker thread")?;
@@ -195,36 +212,67 @@ impl WorkerReaders {
 #[instrument(level = "debug", skip_all, fields(region = %region.region))]
 fn rewrite_region(
     bam: &mut bam::IndexedReader,
-    calls_reader: &mut RastairBedReader,
+    calls_reader: &mut CallsReader,
     fasta: &mut FastaReader,
     region: &ChunkRegion,
     mode: BamMode,
-    is_last_segment: bool,
 ) -> Result<Vec<Record>> {
-    FetchDefinition::try_from(&region.region)
+    // A read pair's haplotype is voted on by both mates, and a mate may start
+    // in a neighbouring segment.
+    let reach = if calls_reader.has_phase() { haplotag::MATE_REACH } else { 0 };
+    let fetched = Region {
+        contig: region.contig.clone(),
+        start: region.start.saturating_sub(reach),
+        end: region.end.saturating_add(reach).min(region.last_position),
+    };
+    FetchDefinition::try_from(&fetched)
         .wrap_err("Could not convert region string")
         .and_then(|r| bam.fetch(r).wrap_err("Could not fetch segment from BAM file"))
         .wrap_err_with(|| format!("Could not fetch region `{}` from BAM file", region.region))?;
 
-    let noodle_region = region
-        .region
-        .clone()
-        .try_into()
-        .wrap_err("Failed to convert region representation")
-        .this_is_a_bug()?;
+    let region_start = region.start.cast_signed();
+    let region_end = region.end.cast_signed();
+    // The fetch returns every read overlapping what it asked for, so a read
+    // crossing a boundary comes back in two segments: the one it starts in
+    // writes it.
+    let owned = |record: &Record| (region_start..region_end).contains(&record.pos());
 
-    let calls: FxHashMap<u32, RastairCall> = calls_reader
-        .query(&noodle_region)
-        .wrap_err("failed to query calls file")?
-        .iter()
-        .map(|call| (call.pos, call.call.clone()))
-        .collect();
+    let mut record = Record::new();
+    let mut records = Vec::new();
+    while let Some(result) = bam.read(&mut record) {
+        if let Err(error) = result {
+            warn!(%error, "Failed to read BAM record");
+            continue;
+        }
+        // The other reads are only there to vote with their mates.
+        if owned(&record) || calls_reader.has_phase() {
+            records.push(record.clone());
+        }
+    }
 
-    // Fetch the reference sequence for this region (with 2bp padding for context lookup).
-    // Reads may extend beyond the region, so lookups that fall outside return None.
+    if !records.iter().any(owned) {
+        return Ok(Vec::new());
+    }
+    let starts = records.iter().map(Record::pos);
+    let ends = records.iter().map(|record| record.reference_end());
+    let (Some(span_start), Some(span_end)) = (starts.min(), ends.max()) else {
+        return Ok(Vec::new());
+    };
+    let span = Region {
+        contig: region.contig.clone(),
+        start: u64::try_from(span_start).wrap_err("read starts before its contig")?,
+        end: u64::try_from(span_end)
+            .wrap_err("read ends before its contig")?
+            .min(region.last_position),
+    };
+    let calls = calls_reader
+        .query(&span, fasta, region.last_position)
+        .wrap_err("failed to query calls file")?;
+
+    // 2bp of padding for the context lookup.
     let pad = 2u64;
-    let ref_start = region.start.saturating_sub(pad);
-    let ref_end = region.end.saturating_add(pad).min(region.last_position);
+    let ref_start = span.start.saturating_sub(pad);
+    let ref_end = span.end.saturating_add(pad).min(region.last_position);
     let ref_seq = fasta
         .fetch_seq(&region.contig, ref_start, ref_end)
         .wrap_err("Failed to fetch FASTA region for context lookup")?;
@@ -233,31 +281,23 @@ fn rewrite_region(
         ref_seq.get(idx).map(|&b| Base::from(b))
     };
 
-    let region_start = region.start.cast_signed();
-    let region_end = region.end.cast_signed();
-    let mut record = Record::new();
-    let mut out = Vec::new();
-    while let Some(result) = bam.read(&mut record) {
-        if let Err(error) = result {
-            warn!(%error, "Failed to read BAM record");
-            continue;
+    let mut fragments = haplotag::Fragments::default();
+    if !calls.phased.is_empty() {
+        for record in &records {
+            fragments.add(record, &calls.phased).wrap_err("failed to read a read's haplotype")?;
         }
-
-        // `bam.fetch` returns all reads overlapping the region. Adjacent
-        // segments share boundary positions (segment N ends at X, segment N+1
-        // starts at X), so reads at the boundary would be emitted twice.
-        // Each segment owns reads in [region_start, region_end); the last
-        // segment also includes region_end.
-        let pos = record.pos();
-        if pos < region_start || (!is_last_segment && pos >= region_end) {
-            continue;
-        }
-
-        rewrite_record(&calls, &mut record, mode, ref_base).wrap_err("failed to rewrite record")?;
-        out.push(record.clone());
     }
 
-    Ok(out)
+    records.retain(owned);
+    for record in &mut records {
+        rewrite_record(&calls.by_pos, record, mode, ref_base)
+            .wrap_err("failed to rewrite record")?;
+        if calls_reader.has_phase() {
+            fragments.tag(record).wrap_err("failed to tag a read's haplotype")?;
+        }
+    }
+
+    Ok(records)
 }
 
 #[instrument(level = "debug", skip_all, fields(pos = record.pos()))]

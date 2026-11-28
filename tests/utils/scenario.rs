@@ -300,6 +300,15 @@ impl Scenario {
         })
     }
 
+    /// The haplotype each read pair comes from, by read name.
+    pub fn read_haplotypes(&self) -> BTreeMap<String, Hap> {
+        self.templates
+            .iter()
+            .enumerate()
+            .map(|(index, template)| (format!("{}{index}", self.read_name_prefix), template.hap))
+            .collect()
+    }
+
     pub fn reference(&self) -> &[u8] {
         &self.reference
     }
